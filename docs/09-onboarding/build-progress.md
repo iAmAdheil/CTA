@@ -45,6 +45,16 @@ Wrappers-only scope. The end-to-end loop demo is deferred until `orchestrator.md
 - [x] Verified `send_nudge` short-text path (`send-keys -l`) and long-multiline path (`paste-buffer`) by capturing the typed text in a file via `cat > …`
 - [x] Verified `kill_window` and `remove_worktree` clean up correctly and are safe to call twice
 
+## Stage 3 — Task Breakdown Scaffolding
+
+Scaffolding-only scope. The `/task-breakdown` skill (the actual breakdown agent) is deferred to the agent-prompts session. The end-to-end demo (approved spec → task files in `tasks/backlog/`) waits for that skill to exist.
+
+- [x] `templates/spec.md` — spec template. Frontmatter (`status`, `priority`, `linear_epic_id`), and sections for Overview, Acceptance Criteria, Out of Scope, References, Implementation Notes
+- [x] `scripts/run-breakdown.sh` — thin wrapper that runs `claude --print --model sonnet --max-budget-usd 1.00 "/task-breakdown <spec-path>"`. Validates spec path; budget cap + model overridable via env vars
+- [x] `scripts/setup.sh` updated — now copies `templates/spec.md` → `docs/specs/_template.md` on first run; idempotent on re-run
+- [x] Verified `setup.sh` on a clean tempdir: template copied first run, no-op on second
+- [x] Verified `run-breakdown.sh` argument validation: missing arg exits 2, missing-file exits 1 (live `claude` call not exercised since the skill doesn't exist yet)
+
 ---
 
 ## Session memories saved

@@ -42,7 +42,19 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. CLAUDE.md (starter, only if missing)
+# 4. docs/specs/_template.md (copy from harness templates if missing)
+# ---------------------------------------------------------------------------
+if [ -f docs/specs/_template.md ]; then
+  echo "• docs/specs/_template.md already exists — leaving alone"
+elif [ -f "$HARNESS_ROOT/templates/spec.md" ]; then
+  cp "$HARNESS_ROOT/templates/spec.md" docs/specs/_template.md
+  echo "✓ docs/specs/_template.md (copied from harness templates/spec.md)"
+else
+  echo "! harness templates/spec.md missing — skipped"
+fi
+
+# ---------------------------------------------------------------------------
+# 5. CLAUDE.md (starter, only if missing)
 # ---------------------------------------------------------------------------
 if [ -f CLAUDE.md ]; then
   echo "• CLAUDE.md already exists — leaving alone"
@@ -80,7 +92,7 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
-# 5. orchestrator-state.yaml (empty initial state)
+# 6. orchestrator-state.yaml (empty initial state)
 # ---------------------------------------------------------------------------
 if [ -f orchestrator-state.yaml ]; then
   echo "• orchestrator-state.yaml already exists — leaving alone"
@@ -97,7 +109,7 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
-# 6. .gitignore entries
+# 7. .gitignore entries
 # ---------------------------------------------------------------------------
 ensure_gitignore_line() {
   local line="$1"
