@@ -1,0 +1,20 @@
+id: TASK-NNN
+title: ""
+spec: "docs/specs/feature-{name}.md"
+status: backlog          # backlog | in-progress | pr-opened | pr-updated | qa-failed | done | blocked | blocked-escalated
+priority: medium         # critical | high | medium | low
+depends_on: []
+blocks: []
+can_parallelize_with: []
+assigned_to: null
+model: sonnet
+linear_id: null
+worktree: null
+window: null
+started: null
+pr_url: null
+pr_number: null
+qa_failure_count: 0
+qa_out_of_scope_bugs: []
+suggested_files_to_read: []
+references: []

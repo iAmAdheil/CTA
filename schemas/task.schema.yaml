@@ -1,0 +1,109 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+$id: "task.schema.yaml"
+title: Task
+description: A single unit of work executed by a worker agent. One file per task in tasks/{backlog,in-progress,review,done}/.
+type: object
+additionalProperties: false
+
+required:
+  - id
+  - title
+  - spec
+  - status
+  - priority
+  - depends_on
+  - blocks
+  - can_parallelize_with
+  - model
+  - qa_failure_count
+
+properties:
+  id:
+    type: string
+    pattern: "^(TASK|BUG)-[0-9]+$"
+    description: Unique task ID. BUG-NNN is reserved for orchestrator-filed out-of-scope findings from QA.
+
+  title:
+    type: string
+    minLength: 1
+
+  spec:
+    type: string
+    description: Path (from project root) to the spec this task implements.
+
+  status:
+    type: string
+    enum:
+      - backlog
+      - in-progress
+      - pr-opened
+      - pr-updated
+      - qa-failed
+      - done
+      - blocked
+      - blocked-escalated
+
+  priority:
+    type: string
+    enum: [critical, high, medium, low]
+
+  depends_on:
+    type: array
+    items: { type: string, pattern: "^(TASK|BUG)-[0-9]+$" }
+
+  blocks:
+    type: array
+    items: { type: string, pattern: "^(TASK|BUG)-[0-9]+$" }
+
+  can_parallelize_with:
+    type: array
+    items: { type: string, pattern: "^(TASK|BUG)-[0-9]+$" }
+
+  assigned_to:
+    type: [string, "null"]
+    description: Worker identifier, filled in by orchestrator when spawned.
+
+  model:
+    type: string
+    enum: [sonnet, opus, haiku]
+
+  linear_id:
+    type: [string, "null"]
+
+  worktree:
+    type: [string, "null"]
+    description: Path to the git worktree the worker is using.
+
+  window:
+    type: [integer, "null"]
+    description: tmux window index assigned to this task.
+
+  started:
+    type: [string, "null"]
+    format: date-time
+
+  pr_url:
+    type: [string, "null"]
+    format: uri
+
+  pr_number:
+    type: [integer, "null"]
+
+  qa_failure_count:
+    type: integer
+    minimum: 0
+    description: Incremented by orchestrator on each QA FAIL. Escalates at 2, hard-stops at 3.
+
+  qa_out_of_scope_bugs:
+    type: array
+    items: { type: string, pattern: "^BUG-[0-9]+$" }
+
+  suggested_files_to_read:
+    type: array
+    items: { type: string }
+    description: Files in the codebase the worker should read before writing code.
+
+  references:
+    type: array
+    items: { type: string }
+    description: Misc files (wireframes, mockups, flows) the worker reads alongside the spec.

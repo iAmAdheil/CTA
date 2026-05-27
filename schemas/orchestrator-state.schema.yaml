@@ -1,0 +1,59 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+$id: "orchestrator-state.schema.yaml"
+title: OrchestratorState
+description: Live orchestrator state. Ephemeral, never committed. Written atomically each cycle.
+type: object
+additionalProperties: false
+
+required:
+  - active_workers
+  - max_workers
+  - queue
+
+properties:
+  active_workers:
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required: [task_id, worktree, window, started, model]
+      properties:
+        task_id:
+          type: string
+          pattern: "^(TASK|BUG)-[0-9]+$"
+        worktree:
+          type: string
+          description: Path (absolute or relative to project root) of the git worktree.
+        window:
+          type: integer
+          minimum: 0
+          description: tmux window index.
+        started:
+          type: string
+          format: date-time
+        model:
+          type: string
+          enum: [sonnet, opus, haiku]
+
+  max_workers:
+    type: integer
+    minimum: 1
+    description: Cap on concurrent worker agents.
+
+  queue:
+    type: array
+    description: Task IDs that are runnable (deps satisfied) but waiting for a worker slot.
+    items:
+      type: string
+      pattern: "^(TASK|BUG)-[0-9]+$"
+
+  last_action:
+    type: [string, "null"]
+
+  last_action_time:
+    type: [string, "null"]
+    format: date-time
+
+  cycle_count:
+    type: integer
+    minimum: 0
