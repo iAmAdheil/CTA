@@ -55,6 +55,10 @@ CLAUDE_CONFIG = Path.home() / ".claude.json"
 PROMPT_DIR_ENV = "HARNESS_PROMPT_DIR"
 # Long-text threshold above which we use paste-buffer instead of send-keys
 NUDGE_LITERAL_MAX = 2000
+# Idle command a provisioned-but-not-yet-launched worker window runs. It holds
+# the window open (and its index stable) until `launch_worker` respawns it with
+# the real claude command. INT_MAX seconds (~68y); BSD/GNU sleep both accept it.
+PLACEHOLDER_CMD = "sleep 2147483647"
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +97,9 @@ def _prompt_dir() -> Path:
 def ensure_session(session: str | None = None) -> str:
     """Create the harness tmux session if it doesn't exist. Returns the name."""
     name = session or _session_name()
-    if _run(["tmux", "has-session", "-t", name], check=False).returncode != 0:
+    # capture=True so tmux's "can't find session: <name>" doesn't leak to stderr
+    # and pollute callers that read our JSON from a merged stdout+stderr stream.
+    if _run(["tmux", "has-session", "-t", name], check=False, capture=True).returncode != 0:
         # window 0 is a placeholder for the orchestrator itself
         _run(["tmux", "new-session", "-d", "-s", name, "-n", "orchestrator"])
     return name
@@ -268,7 +274,7 @@ def kill_window(window_id: str) -> None:
 # Worker spawn
 # ---------------------------------------------------------------------------
 
-def spawn_worker(
+def provision_worker(
     *,
     task_id: str,
     prompt: str,
@@ -280,30 +286,20 @@ def spawn_worker(
     window_name: str | None = None,
     session_id: str | None = None,
 ) -> dict[str, Any]:
-    """Spin up a worker.
+    """Phase 1 of spawning: set everything up *except* starting the worker.
 
-    Side effects (in order):
-      1. Ensure the harness tmux session exists.
-      2. Create a git worktree at `worktree` (default: ../wt-<task_id>) on
-         a new branch `task/<task_id>` from `base_branch` (default: the repo's
-         current branch — see `resolve_base_branch`).
-      3. Write `prompt` to a per-task temp file.
-      4. `tmux new-window` running the spawn helper, which `exec`s
-         `claude --session-id <uuid> "$(cat <prompt-file>)"` in the worktree.
-      5. Return a dict the orchestrator can hand to
-         `state_manager.add_worker(...)`.
+    Creates the worktree/branch, pre-trusts it, writes the prompt file, and
+    reserves an **idle placeholder** tmux window (running `PLACEHOLDER_CMD`, not
+    claude). The worker is NOT running yet.
 
-    Returns:
-        {
-          "task_id": str,
-          "session_id": str (UUID),
-          "session": str (tmux session name),
-          "window": int (tmux window index),
-          "window_target": str ("harness:1"),
-          "worktree": str (absolute path),
-          "branch": str,
-          "prompt_file": str,
-        }
+    This exists so the orchestrator can do all of its bookkeeping — move the task
+    file to `in-progress/`, set `status: in-progress` + worktree/window/started/
+    assigned_to, record the worker in `orchestrator-state.yaml` — *before* the
+    worker process exists. A worker that is launched into a fully-prepared world
+    can never observe a half-set-up task file nor race the orchestrator's writes
+    to it. Call `launch_worker` with the returned fields to actually start it.
+
+    Returns the same dict as `spawn_worker`, plus `"launched": False`.
     """
     sess = ensure_session(session)
     sid = session_id or str(uuid.uuid4())
@@ -324,12 +320,13 @@ def spawn_worker(
     name = window_name or f"worker-{task_id}"
     target = f"{sess}:{window}" if window is not None else sess
 
+    # Reserve the window with an idle hold command. `launch_worker` replaces it.
     cmd = [
         "tmux", "new-window",
         "-t", target,
         "-n", name,
         "-P", "-F", "#{window_index}",
-        f"{SPAWN_HELPER} {wt_path!s} {sid} {prompt_file!s}",
+        PLACEHOLDER_CMD,
     ]
     res = _run(cmd, capture=True)
     assigned = int(res.stdout.strip())
@@ -343,7 +340,83 @@ def spawn_worker(
         "worktree": str(wt_path),
         "branch": branch,
         "prompt_file": str(prompt_file),
+        "launched": False,
     }
+
+
+def launch_worker(
+    *,
+    worktree: str | os.PathLike,
+    session_id: str,
+    prompt_file: str | os.PathLike,
+    window: int | str,
+    session: str | None = None,
+) -> dict[str, Any]:
+    """Phase 2 of spawning: start the worker in an already-provisioned window.
+
+    `tmux respawn-window -k` kills the placeholder hold command and runs the
+    spawn helper (which `exec`s `claude --session-id <uuid> "$(cat <prompt>)"`)
+    in the same window index. From here the worker is live.
+
+    `window` may be an int index or a full `session:index` target.
+    """
+    sess = session or _session_name()
+    target = window if (isinstance(window, str) and ":" in window) else f"{sess}:{window}"
+    cmd = [
+        "tmux", "respawn-window", "-k",
+        "-t", str(target),
+        f"{SPAWN_HELPER} {worktree!s} {session_id} {prompt_file!s}",
+    ]
+    _run(cmd)
+    return {"session": sess, "window_target": str(target), "launched": True}
+
+
+def spawn_worker(
+    *,
+    task_id: str,
+    prompt: str,
+    worktree: str | None = None,
+    base_branch: str | None = None,
+    repo_root: str | os.PathLike | None = None,
+    session: str | None = None,
+    window: int | None = None,
+    window_name: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """Provision + launch a worker in one call (the worker starts immediately).
+
+    Convenience wrapper around `provision_worker` + `launch_worker`. Prefer the
+    two-phase form from the orchestrator so bookkeeping happens before launch
+    (see `provision_worker`); use this for manual/testing one-shots where there
+    is no concurrent writer to the task file.
+
+    Returns:
+        {
+          "task_id": str, "session_id": str (UUID), "session": str,
+          "window": int, "window_target": str, "worktree": str (abs),
+          "branch": str, "prompt_file": str, "launched": True,
+        }
+    """
+    info = provision_worker(
+        task_id=task_id,
+        prompt=prompt,
+        worktree=worktree,
+        base_branch=base_branch,
+        repo_root=repo_root,
+        session=session,
+        window=window,
+        window_name=window_name,
+        session_id=session_id,
+    )
+    launch_worker(
+        worktree=info["worktree"],
+        session_id=info["session_id"],
+        prompt_file=info["prompt_file"],
+        window=info["window"],
+        session=info["session"],
+    )
+    info["launched"] = True
+    return info
 
 
 # ---------------------------------------------------------------------------
@@ -393,17 +466,31 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_spawn = sub.add_parser("spawn-worker", help="Spawn a worker in a new tmux window")
-    p_spawn.add_argument("--task-id", required=True)
-    g_prompt = p_spawn.add_mutually_exclusive_group(required=True)
-    g_prompt.add_argument("--prompt", help="Initial prompt as a string")
-    g_prompt.add_argument("--prompt-file", help="Path to a file containing the initial prompt")
-    p_spawn.add_argument("--worktree", default=None, help="Worktree path (default: ../wt-<task-id>)")
-    p_spawn.add_argument("--base-branch", default=None, help="Branch to cut the worktree from (default: repo's current branch, or $HARNESS_BASE_BRANCH)")
-    p_spawn.add_argument("--repo-root", default=None, help="Repo to spawn the worktree from (default: cwd)")
-    p_spawn.add_argument("--session", default=None)
-    p_spawn.add_argument("--window", type=int, default=None, help="Target window index (default: tmux auto-assigns)")
-    p_spawn.add_argument("--session-id", default=None, help="Pre-allocated claude --session-id UUID (default: generate one)")
+    # Shared provisioning args, used by both spawn-worker and provision-worker.
+    def _add_provision_args(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--task-id", required=True)
+        g = p.add_mutually_exclusive_group(required=True)
+        g.add_argument("--prompt", help="Initial prompt as a string")
+        g.add_argument("--prompt-file", help="Path to a file containing the initial prompt")
+        p.add_argument("--worktree", default=None, help="Worktree path (default: ../wt-<task-id>)")
+        p.add_argument("--base-branch", default=None, help="Branch to cut the worktree from (default: repo's current branch, or $HARNESS_BASE_BRANCH)")
+        p.add_argument("--repo-root", default=None, help="Repo to spawn the worktree from (default: cwd)")
+        p.add_argument("--session", default=None)
+        p.add_argument("--window", type=int, default=None, help="Target window index (default: tmux auto-assigns)")
+        p.add_argument("--session-id", default=None, help="Pre-allocated claude --session-id UUID (default: generate one)")
+
+    p_spawn = sub.add_parser("spawn-worker", help="Provision + launch a worker in one call (worker starts immediately)")
+    _add_provision_args(p_spawn)
+
+    p_prov = sub.add_parser("provision-worker", help="Phase 1: create worktree + reserve an idle window, but do NOT start the worker")
+    _add_provision_args(p_prov)
+
+    p_launch = sub.add_parser("launch-worker", help="Phase 2: start the worker in an already-provisioned window")
+    p_launch.add_argument("--worktree", required=True, help="Worktree path returned by provision-worker")
+    p_launch.add_argument("--session-id", required=True, help="session-id returned by provision-worker")
+    p_launch.add_argument("--prompt-file", required=True, help="prompt_file returned by provision-worker")
+    p_launch.add_argument("--window", required=True, help="Window index (or session:index) returned by provision-worker")
+    p_launch.add_argument("--session", default=None)
 
     p_nudge = sub.add_parser("nudge", help="Send text to a running worker window")
     p_nudge.add_argument("--window", required=True, help="window-id (e.g. '1' or 'harness:1')")
@@ -428,9 +515,10 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
-    if args.cmd == "spawn-worker":
+    if args.cmd in ("spawn-worker", "provision-worker"):
         prompt = args.prompt if args.prompt is not None else Path(args.prompt_file).read_text(encoding="utf-8")
-        info = spawn_worker(
+        fn = spawn_worker if args.cmd == "spawn-worker" else provision_worker
+        info = fn(
             task_id=args.task_id,
             prompt=prompt,
             worktree=args.worktree,
@@ -439,6 +527,18 @@ def main(argv: list[str] | None = None) -> int:
             session=args.session,
             window=args.window,
             session_id=args.session_id,
+        )
+        json.dump(info, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return 0
+
+    if args.cmd == "launch-worker":
+        info = launch_worker(
+            worktree=args.worktree,
+            session_id=args.session_id,
+            prompt_file=args.prompt_file,
+            window=args.window,
+            session=args.session,
         )
         json.dump(info, sys.stdout, indent=2)
         sys.stdout.write("\n")
