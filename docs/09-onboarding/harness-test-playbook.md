@@ -137,12 +137,20 @@ conda run -n harness python -m harness.state_manager runnable                   
 ```
 
 For each runnable task — **move the file first** (avoids a read-before-move race), then spawn
-with an absolute task-file path in the prompt:
+with an absolute task-file path in the prompt. This manual flow uses the one-shot `spawn-worker`
+(worker starts immediately), which is fine when *you* are the only one writing the task file.
+
+> The real `/orchestrator` instead uses the two-phase **`provision-worker`** → bookkeep →
+> **`launch-worker`** split so it can set `status: in-progress` + worktree/window/state *before* the
+> worker exists — eliminating the status-write race a fast worker would otherwise win. To rehearse
+> that flow by hand: `provision-worker …` (returns `window`/`session_id`/`worktree`/`prompt_file`,
+> reserves an idle `sleep` window), do the `mv` + status/metadata edit + `add-worker`, then
+> `launch-worker --worktree … --session-id … --prompt-file … --window …`.
 
 ```bash
 cd "$PROJ"
 mv tasks/backlog/TASK-001.yaml tasks/in-progress/TASK-001.yaml
-PROMPT=$(mktemp /tmp/spawn-TASK-001.XXXX.txt)
+PROMPT=$(mktemp /tmp/spawn-TASK-001.XXXXXX)
 cat > "$PROMPT" <<EOF
 You are a worker on the agent-harness. Follow the /worker skill.
 TASK_FILE: $PROJ/tasks/in-progress/TASK-001.yaml
