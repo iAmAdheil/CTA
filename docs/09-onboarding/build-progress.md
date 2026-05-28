@@ -55,6 +55,12 @@ Scaffolding-only scope. The `/task-breakdown` skill (the actual breakdown agent)
 - [x] Verified `setup.sh` on a clean tempdir: template copied first run, no-op on second
 - [x] Verified `run-breakdown.sh` argument validation: missing arg exits 2, missing-file exits 1 (live `claude` call not exercised since the skill doesn't exist yet)
 
+## Skills (user-scope, `~/.claude/skills/`)
+
+Skills live in `~/.claude/skills/<name>/SKILL.md` (user-scope), not in this repo — see the saved memory `skills-live-in-user-scope.md` for the rationale.
+
+- [x] `orchestrator` — one-cycle stateless orchestrator. Reads state, detects transitions (approved spec → breakdown, runnable backlog → spawn worker, pr-opened → teardown + move to review, done → archive, blocked → defer), calls harness wrappers via Bash. No notifications (Stage 5 deferred). No internal loop — external driver handles cadence. 220 lines. Not yet exercised end-to-end (waiting on `/task-breakdown` and `/worker` skills before the full loop can run)
+
 ---
 
 ## Session memories saved

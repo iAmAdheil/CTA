@@ -18,6 +18,12 @@ session_id="$2"
 prompt_file="$3"
 
 cd "$worktree"
+# Workers run unattended in a detached tmux window — there is no human to
+# approve tool use, so permission prompts would hang the worker forever.
+# Default to skipping them; set HARNESS_CLAUDE_DANGEROUS=0 in the tmux server
+# environment to opt out.
+perms="--dangerously-skip-permissions"
+[ "${HARNESS_CLAUDE_DANGEROUS:-1}" = "0" ] && perms=""
 # Quoting note: $(cat ...) inside double-quotes is NOT re-expanded by bash,
 # so prompt contents (incl. $, backticks, quotes) are passed verbatim.
-exec claude --session-id "$session_id" "$(cat "$prompt_file")"
+exec claude $perms --session-id "$session_id" "$(cat "$prompt_file")"

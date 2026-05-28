@@ -11,9 +11,9 @@ For the full description of each component, see [[harness-projects]].
 Have these in place:
 
 - [x] tmux installed — `brew install tmux`
-- [ ] Python 3.11+ — `python3 --version`
-- [ ] Claude Code CLI installed and authenticated — `claude --version`
-- [ ] GitHub CLI installed and authenticated — `gh auth status`
+- [x] Python 3.11+ — `python3 --version`
+- [x] Claude Code CLI installed and authenticated — `claude --version`
+- [x] GitHub CLI installed and authenticated — `gh auth status`
 - [ ] A test project repo (even an empty one) to run the harness against
 
 ---

@@ -51,6 +51,7 @@ from typing import Any
 DEFAULT_SESSION = "harness"
 DEFAULT_BASE_BRANCH = "main"
 SPAWN_HELPER = Path(__file__).parent / "_spawn_worker.sh"
+CLAUDE_CONFIG = Path.home() / ".claude.json"
 PROMPT_DIR_ENV = "HARNESS_PROMPT_DIR"
 # Long-text threshold above which we use paste-buffer instead of send-keys
 NUDGE_LITERAL_MAX = 2000
@@ -114,6 +115,36 @@ def _resolve_worktree_path(task_id: str, worktree: str | None) -> Path:
     return (Path.cwd().parent / f"wt-{task_id}").resolve()
 
 
+def resolve_base_branch(
+    base: str | None = None,
+    repo_root: str | os.PathLike | None = None,
+) -> str:
+    """Resolve the branch a worker's worktree should be cut from.
+
+    Precedence: explicit `base` arg > `HARNESS_BASE_BRANCH` env > the repo's
+    currently checked-out branch (the orchestrator runs on the integration
+    branch, so that's the right base) > `DEFAULT_BASE_BRANCH`.
+
+    Hardcoding "main" broke repos whose default branch is "master" (or anything
+    else), since the orchestrator never passed `--base-branch`. Detecting the
+    current branch makes worktree creation work regardless of branch name.
+    """
+    if base:
+        return base
+    env = os.environ.get("HARNESS_BASE_BRANCH")
+    if env:
+        return env
+    cwd = str(repo_root) if repo_root else None
+    res = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=cwd, text=True, capture_output=True,
+    )
+    name = res.stdout.strip()
+    if res.returncode == 0 and name and name != "HEAD":  # "HEAD" == detached
+        return name
+    return DEFAULT_BASE_BRANCH
+
+
 def create_worktree(
     branch: str,
     path: str | os.PathLike,
@@ -145,6 +176,52 @@ def create_worktree(
                 f"git worktree add failed: {res.stderr.strip()}"
             )
     return p
+
+
+def pretrust_path(path: str | os.PathLike) -> bool:
+    """Mark `path` as trusted in ~/.claude.json.
+
+    A freshly-created worktree is a brand-new directory, so on first launch
+    `claude` shows the "Do you trust the files in this folder?" dialog.
+    `--dangerously-skip-permissions` does NOT dismiss it. An unattended worker
+    has no human to accept it, so it would hang forever. We pre-seed the trust
+    flag the CLI checks (`projects[<abs-path>].hasTrustDialogAccepted`).
+
+    Returns True if a write happened, False if already trusted or skipped.
+    Best-effort: never raises on a missing/locked/malformed config (the worker
+    just falls back to showing the dialog). Atomic via mkstemp + os.replace.
+    """
+    p = str(Path(path).expanduser().resolve())
+    try:
+        if CLAUDE_CONFIG.exists():
+            with CLAUDE_CONFIG.open(encoding="utf-8") as f:
+                cfg = json.load(f)
+        else:
+            cfg = {}
+    except (json.JSONDecodeError, OSError):
+        return False
+    if not isinstance(cfg, dict):
+        return False
+    projects = cfg.setdefault("projects", {})
+    entry = projects.setdefault(p, {})
+    if entry.get("hasTrustDialogAccepted") is True:
+        return False
+    entry["hasTrustDialogAccepted"] = True
+    entry.setdefault("projectOnboardingSeenCount", 1)
+    try:
+        fd, tmp = tempfile.mkstemp(
+            prefix=".claude.json.", suffix=".tmp", dir=str(CLAUDE_CONFIG.parent)
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+        os.replace(tmp, CLAUDE_CONFIG)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except (OSError, NameError):
+            pass
+        return False
+    return True
 
 
 def remove_worktree(path: str | os.PathLike, *, force: bool = False) -> None:
@@ -196,7 +273,7 @@ def spawn_worker(
     task_id: str,
     prompt: str,
     worktree: str | None = None,
-    base_branch: str = DEFAULT_BASE_BRANCH,
+    base_branch: str | None = None,
     repo_root: str | os.PathLike | None = None,
     session: str | None = None,
     window: int | None = None,
@@ -208,7 +285,8 @@ def spawn_worker(
     Side effects (in order):
       1. Ensure the harness tmux session exists.
       2. Create a git worktree at `worktree` (default: ../wt-<task_id>) on
-         a new branch `task/<task_id>` from `base_branch`.
+         a new branch `task/<task_id>` from `base_branch` (default: the repo's
+         current branch — see `resolve_base_branch`).
       3. Write `prompt` to a per-task temp file.
       4. `tmux new-window` running the spawn helper, which `exec`s
          `claude --session-id <uuid> "$(cat <prompt-file>)"` in the worktree.
@@ -231,8 +309,13 @@ def spawn_worker(
     sid = session_id or str(uuid.uuid4())
     wt_path = _resolve_worktree_path(task_id, worktree)
     branch = f"task/{task_id}"
+    base = resolve_base_branch(base_branch, repo_root)
 
-    create_worktree(branch, wt_path, base_branch=base_branch, repo_root=repo_root)
+    create_worktree(branch, wt_path, base_branch=base, repo_root=repo_root)
+
+    # Pre-trust the worktree so the worker doesn't hang on the folder-trust
+    # dialog (no human to accept it in an unattended run).
+    pretrust_path(wt_path)
 
     # Persist the prompt so the spawn helper can read it without quoting.
     prompt_file = _prompt_dir() / f"{task_id}.prompt.txt"
@@ -316,7 +399,7 @@ def _build_parser() -> argparse.ArgumentParser:
     g_prompt.add_argument("--prompt", help="Initial prompt as a string")
     g_prompt.add_argument("--prompt-file", help="Path to a file containing the initial prompt")
     p_spawn.add_argument("--worktree", default=None, help="Worktree path (default: ../wt-<task-id>)")
-    p_spawn.add_argument("--base-branch", default=DEFAULT_BASE_BRANCH)
+    p_spawn.add_argument("--base-branch", default=None, help="Branch to cut the worktree from (default: repo's current branch, or $HARNESS_BASE_BRANCH)")
     p_spawn.add_argument("--repo-root", default=None, help="Repo to spawn the worktree from (default: cwd)")
     p_spawn.add_argument("--session", default=None)
     p_spawn.add_argument("--window", type=int, default=None, help="Target window index (default: tmux auto-assigns)")

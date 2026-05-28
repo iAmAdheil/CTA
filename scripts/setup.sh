@@ -120,9 +120,43 @@ ensure_gitignore_line() {
     echo "• .gitignore already has '$line'"
   fi
 }
+# Control-plane state — gitignored, lives only in the main worktree, addressed
+# by absolute path (see docs/02-adrs/ADR-001-control-plane-vs-committed-files.md).
 ensure_gitignore_line "orchestrator-state.yaml"
+ensure_gitignore_line "tasks/"
+ensure_gitignore_line "docs/active-features/"
+# Secrets + hygiene.
 ensure_gitignore_line ".env"
 ensure_gitignore_line ".env.*"
+ensure_gitignore_line "__pycache__/"
+ensure_gitignore_line "*.pyc"
+ensure_gitignore_line ".DS_Store"
+
+# ---------------------------------------------------------------------------
+# 8. conda env for the harness Python wrappers
+# ---------------------------------------------------------------------------
+# The orchestrator/worker skills invoke the wrappers via `conda run -n <env>`,
+# so the package must be importable inside a dedicated env. This is machine-level
+# (not per-project) and idempotent: created once, a no-op on later runs.
+# See docs/02-adrs/ADR-002-conda-env-for-wrappers.md.
+HARNESS_ENV="${HARNESS_CONDA_ENV:-harness}"
+if command -v conda >/dev/null 2>&1; then
+  if conda env list | awk '{print $1}' | grep -qx "$HARNESS_ENV"; then
+    echo "• conda env '$HARNESS_ENV' already exists"
+  else
+    echo "Creating conda env '$HARNESS_ENV'…"
+    conda create -n "$HARNESS_ENV" python=3.13 pyyaml -y
+  fi
+  # Editable install (idempotent) so `python -m harness.*` resolves in the env.
+  if conda run -n "$HARNESS_ENV" pip install -e "$HARNESS_ROOT" >/dev/null 2>&1; then
+    echo "✓ harness editable-installed into conda env '$HARNESS_ENV'"
+  else
+    echo "! editable install into '$HARNESS_ENV' failed — check 'conda run -n $HARNESS_ENV pip install -e $HARNESS_ROOT'"
+  fi
+else
+  echo "! conda not found — skipping env setup."
+  echo "  Wrappers will need PYTHONPATH=$HARNESS_ROOT, or install the package another way."
+fi
 
 echo
 echo "Done. Next:"

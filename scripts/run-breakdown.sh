@@ -41,6 +41,11 @@ cmd=(claude --print --model "$MODEL")
 if [ -n "$BUDGET" ]; then
   cmd+=(--max-budget-usd "$BUDGET")
 fi
+# The breakdown runs unattended (no human to approve tool use). Skip permission
+# prompts by default; set HARNESS_CLAUDE_DANGEROUS=0 to opt out.
+if [ "${HARNESS_CLAUDE_DANGEROUS:-1}" = "1" ]; then
+  cmd+=(--dangerously-skip-permissions)
+fi
 cmd+=("/task-breakdown $SPEC_PATH")
 
 exec "${cmd[@]}"
