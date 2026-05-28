@@ -27,18 +27,26 @@ this test exposes are tracked in the roadmap and in the memory `harness-worker-r
   safety classifier blocks each spawn; approve it, toggle auto mode off, or allowlist
   `python -m harness.tmux_manager spawn-worker` in settings.
 
-## The stub skills
+## The skills under test
 
-The real `/task-breakdown` and `/worker` skills may not exist yet. For testing, minimal stubs
-live (user-scope) at `~/.claude/skills/{task-breakdown,worker}/SKILL.md`:
+The real `/task-breakdown` and `/worker` skills live (user-scope) at
+`~/.claude/skills/{task-breakdown,worker}/SKILL.md`. As of 2026-05-28 they replaced the original
+test stubs:
 
-- **`/task-breakdown <spec>`** — reads the spec, writes exactly two independent, schema-valid
-  task YAMLs (`TASK-001`, `TASK-002`) into `tasks/backlog/`. No AC reasoning.
-- **`/worker`** — runs in its worktree, creates `src/<id>.txt`, commits it on its branch, then
-  edits its task file to `status: pr-opened` (+ fake `pr_url`/`pr_number`). It is told the
-  **absolute** task-file path in its spawn prompt (see the worktree-visibility gap below).
+- **`/task-breakdown <spec>`** — reads the spec's acceptance criteria, its referenced ADRs, and
+  `CLAUDE.md`, then shapes a *dependency-aware* set of schema-valid task YAMLs into `tasks/backlog/`
+  (correct `depends_on`/`blocks`/`can_parallelize_with`). Task count is driven by the ACs, not fixed.
+- **`/worker`** — runs in its worktree, reads its task by **absolute** path (control-plane, ADR-001)
+  and the spec/`CLAUDE.md`/code by relative path, implements the task for real, runs the project's
+  Definition of Done, commits on its branch, opens a PR (real `gh pr create` if a remote +
+  authenticated `gh` exist, else a `local://pr/<id>` marker), and flips its task file to
+  `status: pr-opened`.
 
-If those stubs are missing, recreate them before testing. Keep them trivial and fast.
+> The earlier stub behavior (fixed two tasks; a worker that just dropped `src/<id>.txt`) is gone.
+> On a **throwaway test project with no GitHub remote**, the worker uses the `local://` marker —
+> the status flip, not a real PR, is what drives the loop. Give the test project a trivial
+> `CLAUDE.md` brief and at least one tiny, well-specified spec so the real skills have something
+> concrete to shape and implement.
 
 ---
 
@@ -120,9 +128,12 @@ PROMPT=$(mktemp /tmp/spawn-TASK-001.XXXX.txt)
 cat > "$PROMPT" <<EOF
 You are a worker on the agent-harness. Follow the /worker skill.
 TASK_FILE: $PROJ/tasks/in-progress/TASK-001.yaml
-Your git worktree is your current directory (branch task/TASK-001). Read TASK_FILE,
-make the trivial change, commit on your branch, then edit TASK_FILE to set
-status: pr-opened. If blocked, set status: blocked with a reason and stop.
+Your git worktree is your current directory (branch task/TASK-001). Read TASK_FILE
+(absolute path) plus the spec/CLAUDE.md/code it points at (relative paths in your
+worktree), implement the task for real, satisfy the project's Definition of Done,
+commit on your branch, open a PR (real if a remote exists, else a local:// marker),
+then edit TASK_FILE to set status: pr-opened. If you hit an unresolvable gap, set
+status: blocked and stop.
 EOF
 conda run -n harness python -m harness.tmux_manager spawn-worker --task-id TASK-001 --prompt-file "$PROMPT"
 ```
@@ -141,15 +152,16 @@ Repeat for TASK-002. `max_workers` is 3, so both spawn in one cycle.
 
 ```bash
 tmux list-windows -t harness                                # orchestrator + worker-* windows
-for i in $(seq 1 20); do grep '^status:' tasks/in-progress/*.yaml; sleep 3
+for i in $(seq 1 40); do grep '^status:' tasks/in-progress/*.yaml; sleep 3
   grep -ql 'pr-opened\|blocked' tasks/in-progress/*.yaml && break; done
 tmux capture-pane -p -t harness:1 -S -40 | tail            # see the worker's transcript
 git -C ~/wt-TASK-001 log --oneline -1                       # the worker's commit exists
 ```
 
-Both tasks should reach `pr-opened` in ~20-30s **without any human intervention**. If a worker
-hangs, capture its pane — a "Do you trust the files in this folder?" prompt means the trust
-pre-seed (`tmux_manager.pretrust_path`) didn't apply.
+The real worker does an actual implementation + Definition-of-Done run, so expect ~1-3 min per
+task (vs the stub's ~20-30s), still **without any human intervention**. If a worker hangs, capture
+its pane — a "Do you trust the files in this folder?" prompt means the trust pre-seed
+(`tmux_manager.pretrust_path`) didn't apply.
 
 ### 5. Teardown (orchestrator step 4)
 
@@ -199,5 +211,5 @@ See `build-roadmap.md` and the `harness-worker-runtime-gaps` memory for status. 
 | Folder-trust dialog hangs unattended workers | **Fixed** (`tmux_manager.pretrust_path`) | — |
 | Tool-permission prompts hang unattended sessions | **Fixed** (`--dangerously-skip-permissions` in wrappers) | — |
 | Worker's worktree can't see `tasks/in-progress/<id>.yaml` | **Fixed** (ADR-001: gitignored control-plane, absolute-path access) | spawn prompt passes the absolute main-repo path |
-| `python -m harness.*` not importable; no `run-orchestrator.sh` | **Open** | export `PYTHONPATH=~/agent-harness` |
+| `python -m harness.*` not importable; no `run-orchestrator.sh` | **Fixed** (ADR-002: `harness` conda env + editable install, `conda run -n harness`; `run-orchestrator.sh` added) | — |
 | Base branch hardcoded to `main` (broke `master` repos) | **Fixed** (`resolve_base_branch` auto-detects current branch; `HARNESS_BASE_BRANCH` override) | — |

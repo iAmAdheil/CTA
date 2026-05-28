@@ -9,8 +9,8 @@ What's left to build, grouped by area. Each box is atomic — one coherent file 
 These are written in the dedicated skill-creation session and live in `~/.claude/skills/<name>/SKILL.md`.
 
 - [x] Write `/orchestrator` skill
-- [ ] Write `/task-breakdown` skill
-- [ ] Write `/worker` skill
+- [x] Write `/task-breakdown` skill (real, AC-aware, dependency-shaping — replaced the test stub 2026-05-28)
+- [x] Write `/worker` skill (real implementer, hybrid PR: `gh pr create` w/ remote else `local://` marker — replaced the test stub 2026-05-28)
 
 ## MVH end-to-end validation
 
@@ -89,8 +89,8 @@ Still open (next):
 
 - [ ] Rewrite `build-guide.md` Stage 2  
   Original describes a Python `orchestrator.py` with `while True`. Actual design is LLM agent (skill) + wrappers + external driver.
-- [ ] Remove dead `agent-prompts/` symlink from `setup.sh`  
-  Skills moved to `~/.claude/skills/` per the location decision; the project-side symlink is unused.
+- [x] Remove dead `agent-prompts/` symlink from `setup.sh`  
+  Skills moved to `~/.claude/skills/` per the location decision; `setup.sh` now removes any stale symlink instead of creating one.
 - [ ] Add "running the harness" section to `build-guide.md`  
   Covers `/orchestrator` invocation patterns: manual, `/loop`, cron, file-watcher.
 - [ ] Run `skill-creator` description-optimization on each finished skill  

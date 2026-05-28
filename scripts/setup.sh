@@ -30,15 +30,13 @@ mkdir -p docs/specs docs/adrs docs/active-features
 echo "✓ docs/{specs,adrs,active-features}/"
 
 # ---------------------------------------------------------------------------
-# 3. agent-prompts/ symlink → harness repo
+# 3. Remove any stale agent-prompts/ symlink from older setups.
 # ---------------------------------------------------------------------------
+# Skills now live at ~/.claude/skills/ (user scope), so the old project-side
+# symlink into the harness repo is dead. Clean it up if a prior run created it.
 if [ -L agent-prompts ]; then
-  echo "• agent-prompts/ symlink already exists"
-elif [ -e agent-prompts ]; then
-  echo "! agent-prompts/ exists and is not a symlink — leaving alone"
-else
-  ln -s "$HARNESS_ROOT/agent-prompts" agent-prompts
-  echo "✓ agent-prompts/ → $HARNESS_ROOT/agent-prompts"
+  rm -f agent-prompts
+  echo "✓ removed stale agent-prompts/ symlink"
 fi
 
 # ---------------------------------------------------------------------------

@@ -17,9 +17,8 @@
 #   HARNESS_BREAKDOWN_BUDGET_USD  default: 1.00 (set empty to disable cap)
 #
 # Notes:
-#   - The /task-breakdown skill is not in this repo yet; it's deferred to the
-#     dedicated agent-prompts session. Until then this script is scaffolding.
-#   - cwd must be the project root so claude finds .claude/skills/, docs/, etc.
+#   - The /task-breakdown skill lives at user scope (~/.claude/skills/task-breakdown/).
+#   - cwd must be the project root so claude finds docs/, tasks/, CLAUDE.md, etc.
 
 set -euo pipefail
 
