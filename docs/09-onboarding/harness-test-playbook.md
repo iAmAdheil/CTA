@@ -68,14 +68,32 @@ Worktrees are cut from the repo's current branch (auto-detected by
 `tmux_manager.resolve_base_branch`, override with `HARNESS_BASE_BRANCH`), so `main` or `master`
 both work — no special init needed. `main` is used here just for concreteness.
 
+> ⚠️ **Run the bootstrap as one `&&`-chained block, and never let `cd` fail silently.** This
+> sequence writes `README.md`, commits, and runs `setup.sh` — all of which mutate **whatever the
+> current directory is**. If `cd "$PROJ"` doesn't run, every following command lands in your
+> *previous* cwd, typically the `~/agent-harness` repo itself: `setup.sh` scaffolds `tasks/`,
+> `CLAUDE.md`, `docs/specs/`, and rewrites `.gitignore` there, and the `echo > README.md` + commit
+> clobbers and commits over the harness repo. This actually happened on 2026-05-28 and had to be
+> manually reverted. Two specific traps:
+> - **Bare globs under zsh.** `rm -rf "$PROJ" ~/wt-TASK-*` aborts the *entire line* with "no matches
+>   found" when no `wt-TASK-*` exists (zsh `NOMATCH`), so the `cd` you appended after it never runs.
+>   Use a glob-safe `find` instead.
+> - **Unchained commands.** Newline-separated commands run regardless of whether the previous one
+>   failed. Chain the dir-change with `&&` so a failed `mkdir`/`cd` aborts the rest, and print `pwd`
+>   to confirm before `setup.sh`.
+
 ```bash
-rm -rf "$PROJ" ~/wt-TASK-*            # clean slate
-mkdir "$PROJ" && cd "$PROJ"
-git init -b main -q
-git config user.email dummy@test.local && git config user.name "Dummy Tester"
-echo "# Dummy" > README.md && git add README.md && git commit -qm "initial commit"
-bash ~/agent-harness/scripts/setup.sh
+find ~ -maxdepth 1 -name 'wt-TASK-*' -exec rm -rf {} +    # glob-safe worktree cleanup
+rm -rf "$PROJ" && mkdir "$PROJ" && cd "$PROJ" && pwd && \
+  git init -b main -q && \
+  git config user.email dummy@test.local && git config user.name "Dummy Tester" && \
+  echo "# Dummy" > README.md && git add README.md && git commit -qm "initial commit" && \
+  bash ~/agent-harness/scripts/setup.sh && \
+  echo "BOOTSTRAP OK in $(pwd)"
 ```
+
+If that block stops early or `pwd` is not `$PROJ`, **fix the directory before doing anything else** —
+do not re-run `setup.sh` from the wrong place.
 
 Fill `CLAUDE.md` with a trivial "implementing a task = drop a text file under `src/`" brief,
 then commit the scaffolding so worktrees inherit it:
