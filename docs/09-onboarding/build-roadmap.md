@@ -40,12 +40,20 @@ Second full run done 2026-05-28 with the **real** `/task-breakdown` + `/worker` 
 toy: 2-AC spec → 2 parallel tasks → real implementations, DoD passed, `local://` PR markers → review
 → done → archive). Both skills behaved correctly end-to-end.
 
+Third run done 2026-05-28 validated the **race-free spawn**: `tmux_manager` now splits spawning into
+`provision-worker` (worktree + idle placeholder window, no claude) and `launch-worker` (start claude),
+and `/orchestrator` step 3 does all task-file/state bookkeeping *between* them. Re-ran the toy e2e
+driving the new ordering: both workers reached `pr-opened` with orchestrator metadata
+(`assigned_to`/`worktree`/`window`/`started`) and worker fields (`status`/`pr_url`) **coexisting** —
+no clobber, no stranded task. `/worker` also tightened to write `status` last (PR fields first).
+
 Still open (next):
-- [ ] Run the real `/orchestrator` skill as its own session (both tests drove the steps manually)
-- [ ] Fix the orchestrator status-write race: a fast worker can flip `status: pr-opened` before the
-  orchestrator's step-3 bookkeeping write, which would clobber it back to `in-progress` and strand
-  the task. Orchestrator should set only worktree/window/started/assigned_to and compare-and-set
-  `backlog → in-progress` (never overwrite a non-backlog status). Surfaced in the 2nd e2e run.
+- [ ] Run the real `/orchestrator` skill as its own session (all three tests drove the steps manually)
+
+Resolved:
+- [x] Orchestrator status-write race — fixed via the provision/launch split + bookkeeping-before-launch
+  ordering (worker can't exist until the task file is fully set up). Disjoint field ownership
+  (worker owns `status`/`pr_url`/`pr_number`; orchestrator owns the rest) kept as a stated invariant.
 
 ## Stage 5 — Notifications
 
