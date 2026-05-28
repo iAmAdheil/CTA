@@ -36,8 +36,16 @@ Resolved during/after the test:
 - [x] Base branch hardcoded to `main` (broke `master` repos) → `tmux_manager.resolve_base_branch`
   auto-detects the repo's current branch; `HARNESS_BASE_BRANCH` / `--base-branch` override
 
+Second full run done 2026-05-28 with the **real** `/task-breakdown` + `/worker` skills (string-utils
+toy: 2-AC spec → 2 parallel tasks → real implementations, DoD passed, `local://` PR markers → review
+→ done → archive). Both skills behaved correctly end-to-end.
+
 Still open (next):
-- [ ] Run the real `/orchestrator` skill as its own session (test drove the steps manually)
+- [ ] Run the real `/orchestrator` skill as its own session (both tests drove the steps manually)
+- [ ] Fix the orchestrator status-write race: a fast worker can flip `status: pr-opened` before the
+  orchestrator's step-3 bookkeeping write, which would clobber it back to `in-progress` and strand
+  the task. Orchestrator should set only worktree/window/started/assigned_to and compare-and-set
+  `backlog → in-progress` (never overwrite a non-backlog status). Surfaced in the 2nd e2e run.
 
 ## Stage 5 — Notifications
 
