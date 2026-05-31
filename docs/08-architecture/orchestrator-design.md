@@ -36,10 +36,10 @@ Example cycle log:
 ```
 cycle 47: no runnable tasks, 2 workers active, sleeping
 cycle 48: no runnable tasks, 2 workers active, sleeping
-cycle 49: TASK-051 changed status to pr-opened → triggering QA agent
-cycle 50: QA agent running, sleeping
-cycle 51: QA agent running, sleeping
-cycle 52: qa-report.md updated with verdict PASS → notifying you + queuing merge
+cycle 49: TASK-051 changed status to pr-opened → triggering async QA agent
+cycle 50: QA agent running (review-file WIP), sleeping
+cycle 51: QA agent running (review-file WIP), sleeping
+cycle 52: qa-report-TASK-051.md verdict looks-good → set qa-passed, board → Human Review
 ```
 
 ---
@@ -51,27 +51,39 @@ cycle 52: qa-report.md updated with verdict PASS → notifying you + queuing mer
 | New file in `01-specs/` with `status: approved` | Invoke Task Breakdown Agent |
 | Task file status → `in-progress` (set by orchestrator) | Spawn worker in new worktree + window |
 | `progress.md` contains BLOCKER section | Check if answerable from docs; if not, invoke Opus |
-| Task file status → `pr-opened` (set by worker) | Close worker window, trigger QA + Review agents |
-| Task file status → `pr-updated` (set by fix worker) | Trigger QA again on the same PR |
-| `qa-report.md` written — PASS | Notify you via Telegram, move to human review |
-| `qa-report.md` written — CONDITIONAL, out-of-scope bug | Create BUG-NNN task in backlog, move original task to human review with note |
-| `qa-report.md` written — FAIL (1st time) | Set task status `qa-failed`, re-queue to worker with QA report attached |
-| `qa-report.md` written — FAIL (2nd time) | Invoke Opus for diagnosis; targeted fix instructions or escalate to you |
-| `qa-report.md` written — FAIL (3rd time) | Hard stop, set `blocked-escalated`, Telegram alert to you |
-| Task file status → `done` (set by orchestrator post-merge) | Check dependency graph for newly unblocked tasks; trigger Doc Closeout Agent |
+| Task file status → `pr-opened` (set by worker) | Tear down worker window + worktree, spawn **async QA agent** (own worktree on `task/<id>`). Review agent is a later, separate addition. |
+| Task file status → `pr-updated` (set by Opus fixer) | Trigger QA again (re-QA) on the same branch |
+| `qa-report-<ID>.md` verdict — `looks-good` | Set task `qa-passed`, board → Human Review, notify you |
+| `qa-report-<ID>.md` verdict — `needs-changes` | Set `qa-failed`, spawn **Opus fixer** on the same task (pushes to existing `branch:`, sets `pr-updated`) |
+| `qa-report-<ID>.md` verdict — `needs-changes` on the **2nd** (re-QA) pass | Terminal: anything but `looks-good` now → `escalate` |
+| `qa-report-<ID>.md` verdict — `escalate` (fundamental mismatch) | Set `blocked-escalated`, write `failure_reason` into the task file, board → Human Review |
+| QA agent window died, review file stuck at `WIP` | Failed run: retry QA spawn up to N=2; on exhaustion `escalate` (`blocked-escalated` + `failure_reason`) |
+| Out-of-scope bug noted by QA | **Ignored** by the loop (deferred to the future random-bugs subsystem) |
+| Task file status → `done` (set by the separate merge/archival agent post-merge) | Check dependency graph for newly unblocked tasks; trigger Doc Closeout |
 
 ### Task Status State Machine
 
 ```
 backlog
   → in-progress       (orchestrator spawns worker)
-      → pr-opened     (worker signals done, PR opened)
-          → pr-updated    (fix worker pushes to same PR after QA fail)
-          → done          (orchestrator merges after human approval)
-          → qa-failed     (QA fail 1st/2nd time, re-queued to worker)
-          → blocked-escalated  (QA fail 3rd time, human needed)
+      → pr-opened     (worker signals done, fills branch:, opens PR)
+          → [async QA]
+              → qa-passed         (looks-good → awaiting your manual merge)
+              → qa-failed         (needs-changes: bug, or trivial mismatch → Opus fixer)
+              → blocked-escalated (escalate: fundamental mismatch, or QA run failed ×N → you)
       → blocked       (worker writes BLOCKER, waiting for Opus/you)
+
+qa-failed
+  → pr-updated        (Opus fixer pushes to the existing branch)
+      → [re-QA — 2nd pass is terminal]
+          → qa-passed         (looks-good)
+          → blocked-escalated (anything else — no further retries)
+
+qa-passed
+  → done              (separate agent detects your manual merge, then archives)
 ```
+
+The verdict ladder is **one retry**: `needs-changes` buys exactly one Opus pass; the re-QA either passes or escalates.
 
 ---
 
@@ -95,12 +107,14 @@ PR OPENED
   → triggers QA agent
   → writes orchestrator-state.yaml
 
-MERGED
-  orchestrator detects merge
+MERGED (detected by the separate merge/archival agent, not the orchestrator)
+  agent detects the human merged the PR (gh pr view --json state,mergedAt)
+  → sets task status: done
   → Linear: LIN-51 → "Done"               ← side effect
   → Telegram: "✅ LIN-51 merged"           ← side effect
-  → triggers Doc Closeout Agent
-  → checks dependency graph
+  → triggers Doc Closeout
+  orchestrator (next cycle) sees status: done
+  → archives the task file, checks dependency graph
   → writes orchestrator-state.yaml
 ```
 
@@ -126,8 +140,10 @@ Workers are spun up with:
 
 Workers are torn down when they signal `pr-opened`:
 1. `tmux kill-window -t main:{window}`
-2. `git worktree remove {path}`
+2. `git worktree remove {path}` (the `task/<id>` branch + open PR survive)
 3. Remove from `active_workers` in state
+
+The QA agent and the Opus fixer are tracked the same way (in `active_workers`, the QA one with `role: qa`), each spawning its **own** fresh worktree on the existing `task/<id>` branch and torn down on completion (Option B — worktree stays 1:1 with an `active_workers` entry, so the crash-safe teardown invariant holds unchanged).
 
 ---
 
@@ -169,13 +185,19 @@ max_workers: 3           # hard cap on simultaneous workers
 # Orchestrator checks before spawning:
 # 1. len(active_workers) < max_workers
 # 2. All task.depends_on are in tasks/done/
-# 3. No other active worker is on the same feature
+# 3. The task belongs to the current spec — the harness works one spec at a
+#    time (serial-per-spec), so under normal operation every active worker is
+#    on the same feature. See feature-lifecycle.md "One Spec at a Time".
+
+# QA agents and Opus fixers are tracked agents too (active_workers, role: qa for QA),
+# bounded by the same slot mechanism — within one spec, several tasks can each be in
+# their own QA/fix at once, up to max_workers. Across specs, serial-per-spec means no
+# overlap (the gate holds the next spec until this one's tasks clear the QA loop).
 
 # Never run simultaneously:
-# - Two QA agents
-# - Two Opus invocations
+# - Two QA agents on the SAME task
+# - Two Opus fixers on the same task
 # - Task Breakdown + workers on same feature
-# - Two agents in window 6 (shared slot)
 ```
 
 ---
@@ -186,7 +208,8 @@ max_workers: 3           # hard cap on simultaneous workers
 |---|---|
 | Orchestrator crashes | Restart — reads state from `orchestrator-state.yaml`, continues where it left off |
 | Worker crashes mid-task | Orchestrator detects no progress for N minutes → re-queue task, reset status to `backlog` |
-| Worker opens a bad PR | Review agent flags it, QA fails → orchestrator sends task back to worker with reports attached |
+| Worker opens a bad PR | Behavioral QA runs the feature → `needs-changes` (bug) → Opus fixer pushes to the same branch and re-QA runs |
+| QA agent window dies with no verdict (review file stuck at `WIP`) | Retry the QA spawn up to N=2; on exhaustion `escalate` → `blocked-escalated` + `failure_reason` |
 | Opus invocation fails | Orchestrator retries once, then pauses the task and notifies you via Telegram |
 | Linear API down | Log the failure, continue — Linear sync is a side effect, not load-bearing |
 | Telegram down | Log the failure, continue — you can read state from `orchestrator-state.yaml` directly |

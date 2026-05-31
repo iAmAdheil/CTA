@@ -38,18 +38,23 @@ This is the **only manual gate** before compute starts. A human approves every s
 
 ---
 
-## Stage 2 — ADR Check (Orchestrator + Opus)
+## Stage 2 — Architectural Advisor (Orchestrator + Opus)
 
-Orchestrator detects the new approved spec (watches `01-specs/` for `status: approved`).
+Once `state_manager next-spec` releases an approved spec (highest priority, and only when the previous spec has drained — see "One Spec at a Time" below), the orchestrator runs the **advisor** *before* breakdown:
 
-Before creating tasks, it invokes **Opus** with: the spec + existing ADRs + CLAUDE.md.
+```bash
+bash ~/agent-harness/scripts/run-advisor.sh <spec-path>
+```
 
-Opus answers one question: *"Does this feature require architectural decisions not already covered by existing ADRs?"*
+Opus (the `/advisor` skill) reads the spec + existing ADRs + CLAUDE.md and answers one question: *"Does implementing this spec force an architectural decision not already settled by an existing ADR or convention?"* It then does one of three things, and prints a final `ADVISOR_VERDICT:` line the orchestrator branches on:
 
-- **If yes:** Orchestrator writes ADR stubs to `02-adrs/`. You fill them in (2–3 minutes each — they're short).
-- **If no:** Stage is skipped entirely.
+- **No gap → PROCEED.** Nothing to decide; orchestrator goes straight to breakdown.
+- **Low-risk gap → decide + PROCEED.** If the decision is reversible, local, conventional, with no new external contract / persisted schema / auth boundary, the advisor *makes the call itself*, writes a complete `docs/adrs/ADR-NNN-*.md` with `status: proposed`, **and updates any existing `docs/architecture/` docs the decision makes inaccurate** (citing the proposed ADR, since you ratify it at review), then proceeds. You **ratify or override it at PR-review time** — autonomy with an audit trail, not a 2-minute stub-filling chore. (This runs only on the decide path — never on no-gap PROCEED or on BLOCK, where no decision was made.)
 
-ADRs are written before implementation starts. An agent should never discover an architectural ambiguity mid-task.
+  The orchestrator decides the verdict from the **durable side effect** — it re-reads the spec's `status:` after the advisor runs (`blocked` → BLOCK) and requires an `ADVISOR_VERDICT: PROCEED` line to proceed — rather than trusting the stdout marker alone.
+- **Significant gap → BLOCK.** If it's hard to reverse, introduces a data model/migration, touches auth/security, adds an external contract, is cross-cutting, or needs product/business/legal judgment, the advisor writes `status: blocked` + the open question into the spec and stops. The spec leaves the `next-spec` pool until you answer and flip it back to `approved`.
+
+This still guarantees the original property — an agent never discovers an architectural ambiguity mid-task — but it resolves the common case autonomously instead of stubbing every gap for you. The advisor is the agent responsible for blocking specs.
 
 ---
 
@@ -134,109 +139,110 @@ npm test            ✅ (pre-existing failures noted in progress.md)
 git diff main       reviewed
 ```
 
-Worker opens PR via `gh pr create` with description generated from the spec's acceptance criteria. Then writes `status: pr-opened` to its task file.
+Worker opens PR via `gh pr create` with description generated from the spec's acceptance criteria. It also **fills in the task file's `branch:` field** with the `task/<id>` branch name it created (empty until now), writes the **QA recipe** to `qa-instructions-<TASK-ID>.md` (how to drive *this* feature — routes + request/response for backend, navigate + interactions for frontend — plus its claimed I/O) and points `qa_instructions:` at it. Then it writes `status: pr-opened` to its task file.
 
 Orchestrator detects the status change:
 - Linear: issue → "In Review", PR link attached
 - Moves task file to `tasks/review/`
-- Tears down the worker's tmux window and worktree
+- Tears down the worker's tmux window **and worktree** (the `task/<id>` branch + open PR survive — only the local checkout is removed)
 - Telegram: `"🔀 PR #91 opened for LIN-51. QA starting."`
-- Simultaneously triggers QA Agent (window 4) and Review Agent (window 5)
+- **Triggers the QA agent** — an async, tracked agent (in `active_workers` with `role: qa`) that spawns its **own fresh worktree on the `task/<id>` branch** (Option B). The Review agent is a later, separate addition and is **not** part of this retry loop.
 
 ---
 
 ## Stage 6 — QA (QA Agent)
 
-QA agent receives: PR diff, spec (acceptance criteria), staging URL, pre-existing failure list.
+QA is **behavioral, not a code review.** It runs the feature and forms its verdict from *observed runtime behaviour* — it never reads the diff. ("Don't review code" = no static/diff review; that's the deferred Review agent's job.) Its inputs:
 
-**Pass 1 — Automated:** Runs the test suite against the PR branch. Maps each test result to an acceptance criterion.
+- **The rubric** — `expected_behavior` in the task file, authored by **task-breakdown** from the spec, *before code existed*. Implementation-agnostic ("given X, observable outcome Y"); its vocabulary tracks the task's layer (backend = API/data contract, frontend = UI behaviour, E2E = journey). **This is the grading truth.**
+- **The recipe** — `qa-instructions-<TASK-ID>.md`, authored by the **worker**, telling QA *how* to drive the specific feature it built (and the worker's claimed I/O). **A map, never the rubric.**
+- **How to run the project** — the project's own run/launch skill.
+- Its **own worktree** on the `task/<id>` branch.
 
-**Pass 2 — Browser navigation:** Uses Playwright + Stagehand to manually exercise the feature. Works through each acceptance criterion by actually using the app.
+**Why three authors?** If the worker authored the expectations, it could write them to match its own wrong code (false pass); if QA authored them, it could invent its own (false fail). Authoring the rubric upstream in task-breakdown — a party that neither implements nor tests — removes both biases.
 
-Writes to `04-active-features/{feature}/qa-report.md`:
+QA runs **two checks**:
+1. **Execute the recipe** — does the implementation do what the worker claims? (catches a recipe that lies about its own code)
+2. **Recipe vs rubric** — does the claimed/observed behaviour actually satisfy the rubric? (catches a worker that confidently built the *wrong* feature)
 
-```markdown
-| Criterion            | Result | Notes                          |
-|----------------------|--------|-------------------------------|
-| CSV export works     | ✅     | File structure verified        |
-| Large account async  | ⚠️ WARN | 8s actual vs 5s spec target   |
+QA writes the **review-file status** (`WIP` → terminal) and findings to `04-active-features/{feature}/qa-report-<TASK-ID>.md`. The verdict is one of three, by **owner of the next action**:
 
-Verdict: CONDITIONAL PASS
-```
+### `looks-good` → you
+Observed matches the rubric on every in-scope item. Orchestrator sets the task to **`qa-passed`** (board → Human Review), Telegram `"✅ QA passed LIN-51. Ready for your review."` The PR awaits your manual merge (Stage 7).
 
-Orchestrator reads verdict and routes based on failure type:
+### `needs-changes` → Opus (one retry)
+Reached two ways:
+- **A bug** — the worker's intent was right but execution is broken (crashes, won't run, behaves wrong). **Always** an Opus pass, no judgment.
+- **A *trivial* rubric mismatch** — the feature cleanly does something, but it's a small miss vs the rubric that a focused fix closes.
 
-### PASS
-- Linear comment: QA verdict
-- Telegram: `"✅ QA passed LIN-51. Ready for your review."`
-- Task moves to Stage 7 (human review)
+Orchestrator sets `qa-failed`, spawns an **Opus fixer** on the same task. The fixer reads `qa-report-<TASK-ID>.md`, sees `branch:` is already filled → **fix mode: pushes commits to that existing branch, sets `status: pr-updated`** (no second PR). That re-triggers QA.
 
-### CONDITIONAL PASS
-- Telegram: `"⚠️ QA conditional LIN-51. [specific issue]. Original ACs: all pass."`
-- If the issue is out-of-scope (not in the spec's ACs): new `BUG-NNN.yaml` created in `tasks/backlog/`, task still moves to human review with the bug noted
-- If the issue touches an AC item: treated as FAIL
+**Second pass is terminal:** on the re-QA, *anything but `looks-good`* → straight to `escalate` (below). No further retries — the ladder is one retry.
 
-### FAIL — AC failure (first time)
-- Task status: `qa-failed`
-- Worker re-spawned with: original task file + qa-report.md + instruction to fix only what failed
-- Worker pushes new commits to the same PR branch
-- Worker signals `status: pr-updated`
-- Orchestrator triggers QA again on the updated PR
+### `escalate` → you (blocked)
+A **fundamental** rubric mismatch: the worker cleanly built the *wrong* idea, or the spec is genuinely ambiguous — not a one-pass fix. Orchestrator sets `blocked-escalated` (board → Human Review) and **writes the reason into the task file** (`failure_reason`). This is yours to resolve, not Opus's.
 
-### FAIL — AC failure (second time)
-- Orchestrator invokes Opus: spec + both QA reports + current diff → diagnosis
-- If fixable: Opus sends specific fix instructions to a new worker on the same task
-- If spec is unclear: Opus flags it → Telegram to you for human input
+> **The bug-vs-mismatch line:** *broken execution of the right idea* → always retry (bug). *Clean execution of the wrong idea* → judge trivial (Opus) vs fundamental (you). "Is this fixable in one pass?" is asked **only** on the mismatch path.
 
-### FAIL — third time
-- Hard stop. Task status: `blocked-escalated`
-- Telegram: `"🚨 LIN-51 failed QA 3 times. Needs human attention."`
-- You SSH in and diagnose directly
+**Out-of-scope bugs** QA stumbles on (real defects outside this task's rubric) are **ignored** by the verdict — only in-rubric problems route. They're handled by a separate future "random-bugs" subsystem (see `build-roadmap.md`), not this loop.
+
+**QA-run infra failure:** if the QA agent's window dies with the review file stuck at `WIP` (no verdict), that's a failed *run*. Orchestrator retries the QA spawn up to **N=2** times; if still no verdict, it `escalate`s to you (`blocked-escalated` + `failure_reason: "QA couldn't complete after N attempts"`). A QA agent that keeps dying is an infra/env problem — yours, not an Opus fix. This infra-retry is separate from the one-retry verdict ladder.
 
 ---
 
 ## Stage 7 — Human Review (You, on your phone)
 
-You get the Telegram notification. Open Obsidian on your phone, read `qa-report.md`. Check the PR on GitHub mobile. Takes 3–5 minutes.
+A task at `qa-passed` (or `blocked-escalated`) sits in the **Human Review** column with its PR open. You read `qa-report-<TASK-ID>.md` and check the PR on GitHub mobile. Takes 3–5 minutes.
 
-Three options:
-
-**Approve** → SSH into tmux or reply to Telegram bot. Orchestrator merges.
-
-**Send back** → SSH in, leave a note in the task file. Orchestrator re-queues to a worker with your note attached.
-
-**Escalate** → You decide the edge case is acceptable or create a new backlog task to address it later.
+- **Merge** → you merge the PR **manually on GitHub** (no auto-merge — human review is the point). A separate merge-detection/archival agent notices the merge and drives Stage 8.
+- **Send back** → leave a note in the task file; the harness re-queues it.
+- **Escalate** → for `blocked-escalated` tasks, read the `failure_reason`, then either fix the spec/rubric and re-approve, or decide the edge case is acceptable.
 
 ---
 
-## Stage 8 — Merge & Closeout (Orchestrator)
+## Stage 8 — Merge & Closeout (separate agent)
 
-On merge, orchestrator:
-- Linear: issue → "Done", checks if all Epic tasks are complete
-- Kanban: feature card → "Done"
-- Archives `04-active-features/{feature}/`
-- If ops-relevant: stubs `05-runbooks/{feature}-runbook.md`
-- If new endpoints: updates `06-api/endpoints/`
-- If schema changed: updates `08-architecture/data-model.md`
-- Telegram: `"✅ LIN-51 merged. PR #91. 3/5 tasks done on Data Export epic."`
+This is **not** done inline by the orchestrator. A separate merge-detection/archival agent (see `build-roadmap.md`):
+- detects the human merged the PR (`gh pr view --json state,mergedAt`) and sets the task `status: done`
+- Kanban: task card → "Done"; the orchestrator's archive step then `mv`s the task file to `tasks/done/`
+- Archives `04-active-features/{feature}/`; stubs runbooks / updates `06-api/` / `08-architecture/data-model.md` as relevant
+- Telegram: `"✅ LIN-51 merged."`
 
-Orchestrator then checks the dependency graph again. Any tasks now unblocked (because their `depends_on` are all done) get queued for the next worker slot. The loop continues automatically.
+Once a task is `done`, any tasks whose `depends_on` are now all done become runnable for the next worker slot.
 
 ---
 
-## Single Spec vs Parallel Specs
+## One Spec at a Time (serial-per-spec)
 
-The orchestrator picks up any spec with `status: approved`. Parallelism across features is controlled entirely by you.
+The orchestrator works **exactly one spec at a time**, enforced in code by the
+`state_manager next-spec` gate — not by your approval cadence. You can approve
+several specs at once; the orchestrator still drains them serially, highest
+priority first.
 
-**Serial mode (recommended to start):**
-Approve one spec at a time. Let it run fully to merge before approving the next. Simpler mental model, easier to review, no cross-feature merge conflicts.
+**How the gate works:**
+- A spec is "being worked" while any of its tasks sit in `tasks/backlog/` or
+  `tasks/in-progress/`.
+- While a spec is being worked, no other spec is broken down.
+- Once the current spec's tasks are all in a **"now handled by the human"** state —
+  `qa-passed`, `done`, `blocked`, or `blocked-escalated` — the gate releases the
+  next spec. The principle: advance when the **harness has no more automated work**
+  on the task, but still **don't wait on the human to merge**.
+- **`pr-opened`, `qa-failed`, and `pr-updated` are NOT terminal** — they mean the
+  async QA→Opus→re-QA loop is (or will be) running on this spec's tasks. Starting
+  the next spec then would reintroduce the cross-spec concurrency we rejected, so
+  the gate **holds** until every task clears the loop into a human-handled state.
+  (Earlier this design released at `pr-opened`; the QA loop, which `pr-opened` now
+  *triggers*, pushed the release point down to `qa-passed`.)
+- Among approved specs, the gate picks the highest `priority`
+  (critical → high → medium → low, tie-broken by filename).
 
-**Parallel mode (once the harness is mature):**
-Approve multiple specs. The orchestrator fills idle worker slots across all active features. While QA is blocking Feature A, workers execute Feature B tasks. Higher throughput.
+**Why serial, not cross-feature parallel:** simpler mental model, easier review,
+and no cross-feature merge conflicts. Parallelism still happens *within* a spec —
+tasks whose `depends_on` are satisfied and that don't share files run
+concurrently up to `max_workers`. (This reverses the earlier "parallel mode"
+design, where idle slots were filled across features for throughput.)
 
-To switch between modes: no code changes. Just approve the next spec (or don't) based on what you want.
-
-**Important constraint regardless of mode:** tasks that share files within the same feature must not be marked `can_parallelize_with`. The task breakdown agent enforces this. Parallelism is only safe when tasks work on different parts of the codebase.
+**Important constraint:** tasks that share files within the same feature must not be marked `can_parallelize_with`. The task breakdown agent enforces this. Parallelism is only safe when tasks work on different parts of the codebase.
 
 ---
 
@@ -251,19 +257,19 @@ Orchestrator + Sonnet → task breakdown + Linear epic
 Orchestrator          → spin up workers in worktrees (parallelizes where deps allow)
 Workers               → execute, write progress.md
 Blockers              → Orchestrator → Opus → decision → worker unblocked
-Worker done           → PR opened via gh cli
-Orchestrator          → Linear + Telegram + QA + Review triggered
-QA agent              → qa-report.md + Linear comment
-Review agent          → PR review comment
+Worker done           → fills branch + qa-instructions, PR opened via gh cli
+Orchestrator          → tears down worker, triggers async QA (own worktree)
+QA agent              → runs the feature, writes qa-report-<ID>.md verdict
 
-QA PASS:              → You (phone) → approve → merge
-QA FAIL (1st):        → Worker re-spawned to fix only what failed → QA again
-QA FAIL (2nd):        → Opus diagnoses → targeted fix or escalates to you
-QA FAIL (3rd):        → Hard stop → Telegram alert → you SSH in
-Out-of-scope bug:     → Filed as BUG-NNN in backlog → original task continues
+QA looks-good:        → task qa-passed → You (phone) → merge manually
+QA needs-changes:     → bug OR trivial mismatch → Opus fixer pushes to same
+                        branch (pr-updated) → re-QA (2nd pass = looks-good or block)
+QA escalate:          → fundamental mismatch → blocked-escalated + failure_reason → you
+QA run died (×N):     → retry N=2, then escalate to you
+Out-of-scope bug:     → IGNORED by the loop (future random-bugs subsystem)
 
-Merge                 → Orchestrator → Linear done + doc closeout
+Merge (manual, you)   → separate archival agent → done + doc closeout
                       → next unblocked task starts automatically
 ```
 
-You appear twice per task: never (it runs), or when QA escalates to you. For the feature overall: spec approval and final merge. Everything else runs autonomously.
+You appear when QA hands a task to you: `qa-passed` (merge) or `blocked-escalated` (resolve). For the feature overall: spec approval and the manual merges. Everything else runs autonomously.

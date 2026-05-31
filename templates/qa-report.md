@@ -1,63 +1,80 @@
 # QA Report — {{TASK_ID}} / {{FEATURE}}
 
+<!--
+This is BEHAVIORAL QA. You RUN the feature and judge what you OBSERVE.
+Do NOT review the diff / critique code — that is the Review agent's job.
+
+`status:` is the durable signal the orchestrator polls. Start at WIP and only
+move it to a terminal verdict once you've actually exercised the feature.
+-->
+
+**status:** WIP   <!-- WIP → looks-good | needs-changes | escalate -->
+
 **PR:** {{PR_URL}}
-**Spec:** {{SPEC_PATH}}
+**Branch:** {{BRANCH}}            <!-- task/<id>, from the task file -->
+**Rubric source:** task `expected_behavior` (authored by task-breakdown — the grading truth)
+**Recipe source:** {{QA_INSTRUCTIONS_PATH}}   <!-- worker's how-to-drive map -->
 **Run at:** {{TIMESTAMP}}
-**Pre-existing failures considered:** see progress.md
 
 ---
 
-## Acceptance Criteria
+## How I ran it
 
-| Criterion | Result | Notes |
-|-----------|--------|-------|
-| {{AC-1}}  | ✅ / ⚠️ WARN / ❌ | |
-| {{AC-2}}  | | |
-
-Legend: ✅ pass · ⚠️ partial/conditional · ❌ fail
+- Launched via: {{project run/launch skill + command}}
+- Drove the feature using the worker's recipe ({{QA_INSTRUCTIONS_PATH}}).
 
 ---
 
-## Automated Test Suite (Pass 1)
+## Rubric results
 
-```
-{{lint / typecheck / test output, mapped to ACs where possible}}
-```
+One row per `expected_behavior` item (the implementation-agnostic contract). Judge
+**observed behaviour vs the rubric** — the recipe only tells you *how to look*, never
+*what counts as correct*. If the recipe's claimed outcome contradicts the rubric, side
+with the rubric and flag it.
 
-Pre-existing failures (not caused by this PR):
+| Expected behaviour (rubric) | Observed | Result |
+|-----------------------------|----------|--------|
+| {{behaviour-1}}             |          | ✅ / ❌ |
+| {{behaviour-2}}             |          |        |
 
-- {{list, or "none"}}
-
----
-
-## Manual Navigation Test (Pass 2)
-
-Browser steps executed via Stagehand. One block per AC item.
-
-### {{AC-1}}
-- Steps: {{describe}}
-- Observed: {{describe}}
-- Result: ✅ / ⚠️ / ❌
-
-### {{AC-2}}
-- ...
+Legend: ✅ matches rubric · ❌ does not
 
 ---
 
-## Out-of-Scope Findings
+## The two checks
 
-Bugs or rough edges noticed that are not covered by any AC in this spec. The orchestrator may file these as `BUG-NNN` tasks.
-
-- {{describe, or "none"}}
+1. **Recipe executes as claimed?** — did the implementation do what the worker's recipe said it would? {{yes/no + details}}
+2. **Claimed/observed behaviour satisfies the rubric?** — {{yes/no + details}}
 
 ---
 
 ## Verdict
 
-**{{PASS | CONDITIONAL PASS | FAIL}}**
+**{{looks-good | needs-changes | escalate}}**
 
-<!-- Rules:
-- All ACs pass and no out-of-scope issues → PASS
-- All ACs pass but out-of-scope issues found → CONDITIONAL PASS (list above)
-- Any AC fails → FAIL with the specific item flagged
+<!-- Decision rule (first pass):
+- Every in-scope rubric item matches            → looks-good   (→ you merge)
+- A BUG (right intent, broken execution:
+  crashes / won't run / behaves wrong)          → needs-changes (always Opus, no judgment)
+- A TRIVIAL rubric mismatch (clean execution,
+  small miss a focused fix closes)              → needs-changes (Opus)
+- A FUNDAMENTAL rubric mismatch (clean execution
+  of the WRONG idea, or genuinely ambiguous)    → escalate     (→ the human)
+
+The line: broken execution of the RIGHT idea → always retry (bug);
+          clean execution of the WRONG idea → judge trivial (Opus) vs fundamental (you).
+          "Fixable in one pass?" is asked ONLY on the mismatch path.
+
+SECOND PASS (re-QA after an Opus fix): anything but looks-good → escalate. No more retries.
+-->
+
+### If `needs-changes`: what must the Opus fixer address
+- {{specific, behaviour-level — "X should do Y, currently does Z"}}
+
+### If `escalate`: why this needs the human
+- {{the fundamental mismatch or ambiguity — the orchestrator copies this into the task's failure_reason}}
+
+<!--
+Out-of-scope bugs (real defects outside this task's rubric) are NOT handled here —
+ignore them for the verdict. The future random-bugs subsystem owns those.
 -->
