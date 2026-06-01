@@ -48,26 +48,24 @@ window 7  — Monitor               (live state, logs, cost)
 
 ## Sequential, One at a Time
 
-### QA Agent
-- **Window:** 4
+### QA Agent  (behavioral, async — issue #4)
 - **Model:** Sonnet
-- **Concurrent:** 1 (QA is sequential — one PR at a time)
-- **Role:** Verify the PR against the spec using automated tests + browser navigation.
-- **Inputs:** PR diff, spec file, staging URL, pre-existing failure list
-- **Outputs:** `qa-report.md` with verdict (PASS / CONDITIONAL / FAIL), Linear comment
-- **Lifespan:** 10–30 minutes per PR
-- **Tools:** Playwright + Stagehand (or Browser Use) for dynamic navigation
-- **Triggered by:** Orchestrator when a worker signals `status: pr-opened`
+- **Mode:** Async tracked agent (in `active_workers` with `role: qa`), its own worktree on the `task/<id>` branch. Bounded by `max_workers` like a worker — within one spec, several tasks can be in QA at once.
+- **Role:** **RUN the feature** and judge observed behaviour against the task's `expected_behavior` rubric. Two checks: does the recipe execute as claimed; does the claimed/observed behaviour satisfy the rubric. **Never reviews the diff.**
+- **Inputs:** task `expected_behavior` (rubric, the grading truth), worker's `qa_instructions` recipe (the map), the project run/launch skill, its worktree
+- **Outputs:** `qa-report-<id>.md` whose `status:` is `WIP` → `looks-good` / `needs-changes` / `escalate` (the durable verdict the orchestrator polls). Does NOT set the task `status`.
+- **Triggered by:** Orchestrator at `status: pr-opened` / `pr-updated` (step 4D)
 
-### Review Agent
-- **Window:** 5
+### Opus Fixer  (worker fix-mode — issue #4)
+- **Model:** Opus
+- **Mode:** Async tracked agent (`role: fixer`), its own worktree on the existing `task/<id>` branch.
+- **Role:** On a `needs-changes` verdict, fix only what QA flagged, push to the **same** branch (no new PR), set `status: pr-updated` → re-QA. The verdict ladder is **one** retry.
+- **Triggered by:** Orchestrator at `status: qa-failed` (step 4D)
+
+### Review Agent  (deferred — build order D)
 - **Model:** Sonnet
-- **Concurrent:** 1 (runs alongside QA, same PR)
-- **Role:** Read the diff, check it against the spec, flag anything wrong before human review.
-- **Inputs:** PR diff, spec, `decisions.md`
-- **Outputs:** GitHub PR review comment via `gh pr review`, summary to Linear
-- **Lifespan:** ~5 minutes
-- **Triggered by:** Same event as QA agent (PR opened)
+- **Role:** A *code* reviewer that reads the diff vs the spec and posts PR comments via `gh pr review`. Separate from QA (behavioral) and **not** part of the retry ladder.
+- **Status:** not yet built.
 
 ---
 

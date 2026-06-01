@@ -1,7 +1,7 @@
 ---
 id: feature-{slug}
 title: ""
-status: draft          # draft | approved | superseded
+status: draft          # draft | approved | in-breakdown | blocked | superseded
 priority: medium       # critical | high | medium | low
 linear_epic_id: null
 ---

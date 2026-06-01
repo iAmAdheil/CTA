@@ -111,9 +111,19 @@ def add_worker(
     window: int,
     started: str,
     model: str,
+    role: str = "worker",
     path: str | os.PathLike | None = None,
 ) -> dict[str, Any]:
-    """Append a worker to active_workers. Idempotent on task_id."""
+    """Append a tracked agent to active_workers. Idempotent on task_id.
+
+    `role` distinguishes the agent kinds that act on a task across its life:
+    "worker" (fresh implementation), "qa" (async behavioral QA), and "fixer"
+    (Opus fix-mode). The orchestrator consumes a QA verdict exactly once — at the
+    moment it tears down the role:qa agent that produced it — so role is what
+    tells a later cycle "there's an unconsumed verdict I still owe action on".
+    Idempotent on task_id means only ONE tracked agent per task at a time, which
+    holds because the loop is serial per task (worker -> QA -> fixer -> re-QA).
+    """
     state = read_state(path)
     workers = state.setdefault("active_workers", [])
     workers[:] = [w for w in workers if w.get("task_id") != task_id]
@@ -123,6 +133,7 @@ def add_worker(
         "window": window,
         "started": started,
         "model": model,
+        "role": role,
     })
     write_state(state, path)
     return state
@@ -144,18 +155,38 @@ def remove_worker(
 # Dependency graph
 # ---------------------------------------------------------------------------
 
+# Lower number = higher priority. Unknown/missing priority sorts last.
+_PRIORITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+
+def _task_sort_key(task: dict[str, Any]) -> tuple[int, int, str]:
+    """Sort key: priority (critical first), then numeric id, then raw id.
+
+    The numeric-id tie-break keeps TASK-9 ahead of TASK-10 (string sort would
+    reverse them) so equal-priority tasks run in stable, predictable order.
+    """
+    rank = _PRIORITY_RANK.get(task.get("priority"), len(_PRIORITY_RANK))
+    raw_id = task.get("id") or ""
+    try:
+        num = int(raw_id.rsplit("-", 1)[-1])
+    except (ValueError, IndexError):
+        num = 1 << 30
+    return (rank, num, raw_id)
+
+
 def get_runnable_tasks(
     all_tasks: Iterable[dict[str, Any]],
     done_task_ids: Iterable[str],
 ) -> list[dict[str, Any]]:
-    """Return tasks whose status is `backlog` and whose deps are all done.
+    """Return runnable tasks ordered most-critical-first.
 
     A task is runnable iff:
       - status == "backlog"
       - every id in `depends_on` is in `done_task_ids`
 
-    Returns tasks in their original iteration order; the caller decides
-    priority/queueing.
+    The result is sorted by `priority` (critical → high → medium → low, with
+    unknown/missing priority last), tie-broken by numeric task id. The caller
+    can take the first N and trust it's getting the highest-priority work.
     """
     done = set(done_task_ids)
     runnable: list[dict[str, Any]] = []
@@ -165,6 +196,7 @@ def get_runnable_tasks(
         deps = task.get("depends_on") or []
         if all(d in done for d in deps):
             runnable.append(task)
+    runnable.sort(key=_task_sort_key)
     return runnable
 
 
@@ -184,6 +216,84 @@ def load_tasks_in(directory: str | os.PathLike) -> list[dict[str, Any]]:
         if isinstance(data, dict):
             tasks.append(data)
     return tasks
+
+
+# ---------------------------------------------------------------------------
+# Spec discovery + serial-per-spec gate
+# ---------------------------------------------------------------------------
+
+def _read_spec_frontmatter(path: Path) -> dict[str, Any]:
+    """Parse the leading `--- … ---` YAML frontmatter block of a spec file.
+
+    Returns {} if the file has no frontmatter or it isn't a mapping.
+    """
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---"):
+        return {}
+    # Split on the frontmatter fences: text is "---\n<yaml>\n---\n<body>".
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return {}
+    data = yaml.safe_load(parts[1])
+    return data if isinstance(data, dict) else {}
+
+
+# Statuses that mean "the harness still has automated work to do on this task".
+# While ANY task is in one of these, the serial gate holds the next spec. The QA
+# retry loop (issue #4) is why this is status-based, not directory-based:
+# pr-opened/pr-updated/qa-failed tasks live in tasks/review/ but are NOT drained —
+# they mean an async QA agent or an Opus fixer is (or will be) running. The next
+# spec releases only once every task reaches a "now handled by the human" state:
+# qa-passed, done, blocked, blocked-escalated.
+ACTIVE_STATUSES = frozenset({
+    "backlog", "in-progress", "pr-opened", "pr-updated", "qa-failed",
+})
+
+
+def get_next_spec(
+    specs_dir: str | os.PathLike,
+    tasks_root: str | os.PathLike,
+) -> str | None:
+    """Return the path of the next approved spec to break down, or None.
+
+    Serial-per-spec gate: only one spec is worked at a time. A spec counts as
+    "still being worked" while any task has a status in `ACTIVE_STATUSES`
+    (regardless of which tasks/ subdir holds it — QA-loop tasks sit in review/
+    but are still active). So:
+
+      - If ANY task (in backlog/, in-progress/, or review/) is active, return
+        None (hold — the current spec hasn't cleared the QA loop yet).
+      - Otherwise pick the highest-priority spec with `status: approved`
+        (critical → high → medium → low, tie-broken by filename) and return
+        its path. None if there are no approved specs.
+    """
+    tasks_root = Path(tasks_root)
+    all_tasks = (
+        load_tasks_in(tasks_root / "backlog")
+        + load_tasks_in(tasks_root / "in-progress")
+        + load_tasks_in(tasks_root / "review")
+    )
+    if any(t.get("status") in ACTIVE_STATUSES for t in all_tasks):
+        return None
+
+    specs_dir = Path(specs_dir)
+    if not specs_dir.exists():
+        return None
+
+    candidates: list[tuple[int, str, Path]] = []
+    for p in sorted(specs_dir.glob("*.md")):
+        if p.name.startswith("_"):
+            continue
+        fm = _read_spec_frontmatter(p)
+        if fm.get("status") != "approved":
+            continue
+        rank = _PRIORITY_RANK.get(fm.get("priority"), len(_PRIORITY_RANK))
+        candidates.append((rank, p.name, p))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: (c[0], c[1]))
+    return str(candidates[0][2])
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +320,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_add.add_argument("--window", required=True, type=int)
     p_add.add_argument("--started", required=True, help="ISO-8601 timestamp")
     p_add.add_argument("--model", required=True, choices=["sonnet", "opus", "haiku"])
+    p_add.add_argument("--role", default="worker", choices=["worker", "qa", "fixer"], help="Tracked-agent kind (default: worker)")
 
     p_rm = sub.add_parser("remove-worker", help="Remove a worker by task_id")
     p_rm.add_argument("--task-id", required=True)
@@ -219,6 +330,22 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Print task IDs whose deps are satisfied (reads tasks/backlog/ and tasks/done/)",
     )
     p_run.add_argument(
+        "--tasks-root",
+        default="tasks",
+        help="Path to tasks/ directory (default: ./tasks)",
+    )
+
+    p_next = sub.add_parser(
+        "next-spec",
+        help="Print the path of the next approved spec to break down, or nothing "
+        "if a spec is still being worked (serial-per-spec gate)",
+    )
+    p_next.add_argument(
+        "--specs-dir",
+        default="docs/specs",
+        help="Path to the specs directory (default: ./docs/specs)",
+    )
+    p_next.add_argument(
         "--tasks-root",
         default="tasks",
         help="Path to tasks/ directory (default: ./tasks)",
@@ -250,6 +377,7 @@ def main(argv: list[str] | None = None) -> int:
             window=args.window,
             started=args.started,
             model=args.model,
+            role=args.role,
             path=path,
         )
         return 0
@@ -266,6 +394,12 @@ def main(argv: list[str] | None = None) -> int:
         runnable = get_runnable_tasks(backlog, done_ids)
         for task in runnable:
             sys.stdout.write(f"{task.get('id')}\n")
+        return 0
+
+    if args.cmd == "next-spec":
+        spec = get_next_spec(args.specs_dir, args.tasks_root)
+        if spec:
+            sys.stdout.write(f"{spec}\n")
         return 0
 
     if args.cmd == "init":

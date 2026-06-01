@@ -89,8 +89,9 @@ ladder and **owner-based verdicts** (`looks-good` / `needs-changes` / `escalate`
   (`qa_instructions`), project run/launch skill, own worktree. Two checks (execute recipe;
   recipe-vs-rubric). Writes `qa-report-<TASK-ID>.md` with `status:` WIP→verdict. Browser nav
   (Playwright/Stagehand) only for web apps w/ a runnable URL — skip for CLI/toy/MVH.
-- [ ] Write `scripts/run-qa.sh`
-- [ ] `tmux_manager` — variant that provisions a worktree on an **existing** branch (QA + fixer).
+- [x] `tmux_manager` — variant that provisions a worktree on an **existing** branch (QA + fixer) — `--existing-branch`.
+- [ ] **Wire a real test environment + remove the interim auto-pass.** Until then, `/qa-agent` honors `HARNESS_QA_AUTOPASS=1` and writes `looks-good` without behavioral verification (lets the loop be exercised). For web apps this means a **Playwright browser MCP**; for CLI/library projects, running the compile/unit-test DoD is already enough (no browser). Remove the auto-pass gate from the qa-agent skill once the env is in place.
+- [N/A] ~~`scripts/run-qa.sh`~~ — not needed; QA is async (spawned via `tmux_manager` like a worker), not a sync `claude --print` wrapper.
 
 **B. Orchestrator triggers QA** (async, tracked):
 - [ ] At `pr-opened`/`pr-updated`: spawn QA into `active_workers` with `role: qa`, own worktree.

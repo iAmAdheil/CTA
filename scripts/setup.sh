@@ -107,6 +107,67 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
+# 6b. docs/_kanban/ persistent boards (orchestrator moves cards across columns)
+# ---------------------------------------------------------------------------
+# These are NOT regenerated each cycle — they persist, and the orchestrator
+# relocates one card at a time as task/spec status changes. Created once with an
+# empty column skeleton; never clobbered on re-run.
+mkdir -p docs/_kanban
+if [ -f docs/_kanban/specs-board.md ]; then
+  echo "• docs/_kanban/specs-board.md already exists — leaving alone"
+else
+  cat > docs/_kanban/specs-board.md <<'EOF'
+---
+kanban-plugin: basic
+---
+
+## Under Review
+
+
+## Approved
+
+
+## Acknowledged
+
+
+## Blocked
+
+EOF
+  echo "✓ docs/_kanban/specs-board.md (skeleton)"
+fi
+if [ -f docs/_kanban/tasks-board.md ]; then
+  echo "• docs/_kanban/tasks-board.md already exists — leaving alone"
+else
+  cat > docs/_kanban/tasks-board.md <<'EOF'
+---
+kanban-plugin: basic
+---
+
+## Backlog
+
+
+## In Progress
+
+
+## In Review
+
+
+## QA Failed
+
+
+## Human Review
+
+
+## Blocked
+
+
+## Done
+
+EOF
+  echo "✓ docs/_kanban/tasks-board.md (skeleton)"
+fi
+
+# ---------------------------------------------------------------------------
 # 7. .gitignore entries
 # ---------------------------------------------------------------------------
 ensure_gitignore_line() {
@@ -123,6 +184,9 @@ ensure_gitignore_line() {
 ensure_gitignore_line "orchestrator-state.yaml"
 ensure_gitignore_line "tasks/"
 ensure_gitignore_line "docs/active-features/"
+# Kanban boards are orchestrator-maintained control-plane (a live view of task/
+# spec state), so they're gitignored like the rest — not committed project files.
+ensure_gitignore_line "docs/_kanban/"
 # Secrets + hygiene.
 ensure_gitignore_line ".env"
 ensure_gitignore_line ".env.*"

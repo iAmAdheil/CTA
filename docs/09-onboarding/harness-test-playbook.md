@@ -1,7 +1,7 @@
 # Harness End-to-End Test Playbook
 
 A repeatable procedure for proving the harness control loop works on a throwaway project:
-**approved spec → breakdown → workers → `pr-opened` → review → done → archive**.
+**approved spec → breakdown → workers → `pr-opened` → QA → (Opus fixer → re-QA) → `qa-passed` → archive**.
 
 Use this to smoke-test the harness after changing the wrappers, the orchestrator skill, or
 the worker/breakdown skills. It is deliberately stubbed and trivial — the goal is to exercise
@@ -59,8 +59,17 @@ siblings (`../wt-<task-id>`), so keep `PROJ` somewhere with room (e.g. `~/harnes
 
 ```bash
 PROJ=~/harness-dummy
+export HARNESS_QA_AUTOPASS=1   # interim: QA writes looks-good without a real test env (see §6)
 ```
 (No `PYTHONPATH` — the wrappers resolve through the `harness` conda env via `conda run`.)
+
+> **`HARNESS_QA_AUTOPASS=1`** must be in the **tmux server environment** so spawned QA windows
+> inherit it (same propagation as `HARNESS_CLAUDE_DANGEROUS`). Export it **before** the harness
+> tmux session is created; if the session already exists, set it with
+> `tmux setenv -t harness HARNESS_QA_AUTOPASS 1` (new windows inherit it). Until a behavioral test
+> environment (e.g. Playwright browser MCP) is wired, this lets the loop run without QA's verdict
+> being load-bearing. **Unset it to get real behavioral QA.** To exercise the *retry/escalate* ladder
+> instead of always passing, use `HARNESS_QA_FORCE` (see §6) — it overrides auto-pass.
 
 ### 1. Bootstrap the dummy project
 
@@ -105,10 +114,18 @@ git add CLAUDE.md .gitignore docs/specs/_template.md && git commit -qm "scaffold
 **Verify:** `tasks/{backlog,in-progress,review,done}/` and `docs/specs/` exist;
 `orchestrator-state.yaml` present; on branch `main`.
 
-### 2. Drop an approved spec
+### 2. Drop an approved spec — and COMMIT it
 
 Create `docs/specs/feature-greeting.md` with frontmatter `status: approved` and two trivial
 ACs. (Copy `docs/specs/_template.md` and edit.)
+
+> **⚠️ Commit the spec before breakdown.** Workers read the spec by *relative path from their
+> worktree*, which is a **committed git snapshot** — an uncommitted spec is invisible to them and
+> every worker blocks with "referenced spec absent". (The advisor and breakdown see it anyway
+> because they run in the main worktree — so the failure only shows up at the worker.) In the real
+> loop the orchestrator commits the spec at step 2b.0; in this manual playbook, commit it yourself:
+> `git add docs/specs/feature-greeting.md && git commit -m "spec: feature-greeting approved"`.
+> Surfaced by the issue-#4 e2e run.
 
 ### 3. Breakdown (orchestrator step 2)
 
@@ -203,16 +220,79 @@ mv tasks/in-progress/TASK-001.yaml tasks/review/TASK-001.yaml
 **Verify:** only window 0 (`orchestrator`) remains; `git worktree list` shows only the main
 worktree; `active_workers` is `[]`; both tasks in `tasks/review/`.
 
-### 6. Archive (orchestrator step 5)
+### 6. QA cycle (orchestrator step 4) — issue #4
 
-QA/review (Stage 6) isn't built — simulate approval by flipping the `review/` task files to
-`status: done`, then:
+QA is now built. After teardown a `pr-opened` task sits in `tasks/review/`. The orchestrator (step
+4D) spawns an **async QA agent** on the worker's branch; here we drive it by hand.
+
+```bash
+TID=TASK-001
+# the worker filled `branch:` and wrote a qa-instructions-<id>.md recipe at pr-opened — confirm:
+grep -E '^(branch|qa_instructions|status):' tasks/review/$TID.yaml
+
+# spawn QA on the EXISTING branch (own worktree, role: qa)
+PF=$(mktemp /tmp/spawn-$TID.XXXXXX)
+cat > "$PF" <<EOF
+You are the QA agent on the agent-harness. Follow the /qa-agent skill.
+TASK_FILE: $PWD/tasks/review/$TID.yaml
+Your worktree (cwd) is on branch task/$TID. Read TASK_FILE for the expected_behavior
+rubric and qa_instructions recipe, RUN the feature, and write your verdict
+(looks-good / needs-changes / escalate) into the qa-report status. Do not edit the task status.
+EOF
+J=$(conda run -n harness python -m harness.tmux_manager provision-worker --task-id $TID --existing-branch --label qa --prompt-file "$PF")
+WT=$(echo "$J" | python3 -c 'import json,sys;print(json.load(sys.stdin)["worktree"])')
+SID=$(echo "$J" | python3 -c 'import json,sys;print(json.load(sys.stdin)["session_id"])')
+W=$(echo "$J" | python3 -c 'import json,sys;print(json.load(sys.stdin)["window"])')
+conda run -n harness python -m harness.state_manager add-worker --task-id $TID --worktree "$WT" --window $W --started "$(date -u +%FT%TZ)" --model sonnet --role qa
+conda run -n harness python -m harness.tmux_manager launch-worker --worktree "$WT" --session-id "$SID" --prompt-file "$PF" --window $W
+```
+
+**Watch** the QA window run the functions, then read the verdict:
+
+```bash
+grep -m1 '^\*\*status:\*\*' "$(grep '^qa_report:' tasks/review/$TID.yaml | awk '{print $2}')"
+```
+
+**Route by verdict** (orchestrator step 4C). **Before spawning ANY QA agent (first or re-QA), reset
+the report `**status:**` to `WIP`** (or delete the report) so a read can't consume the previous
+round's stale verdict. Then, after a verdict, tear down the QA agent (kill-window → remove-worktree →
+remove-worker):
+
+- `looks-good` → `status: qa-passed`; card → Human Review.
+- `escalate` → `status: blocked-escalated` + set `failure_reason`; card → Human Review.
+- `needs-changes` → `status: qa-failed`, bump `qa_failure_count` to 1; card → QA Failed; then spawn
+  the **Opus fixer** (same three calls, `--label fixer`, `--role fixer`, `--model opus` on
+  launch-worker, prompt = "/worker … FIX MODE"). It pushes to the same branch and sets
+  `pr-updated`; re-spawn QA. **2nd-pass re-QA is terminal:** anything but `looks-good` → `escalate`.
+
+**Exercising the retry/escalate ladder (test hook).** Real QA isn't wired yet, so use
+`HARNESS_QA_FORCE` (it overrides auto-pass) to drive the routing deterministically — set it in the
+tmux server env like the autopass var (`tmux setenv -g HARNESS_QA_FORCE needs-changes`):
+
+- `HARNESS_QA_FORCE=needs-changes` → QA forces `needs-changes` on **pass 1** (the report tells the
+  fixer it's a TEST HOOK → make a trivial change), then `looks-good` on **re-QA** (`qa_failure_count≥1`).
+  This drives the whole happy ladder: `needs-changes → Opus fixer (trivial commit, same branch) →
+  pr-updated → re-QA → looks-good → qa-passed`. **Validated live on TASK-004, 2026-06-01.**
+- `HARNESS_QA_FORCE=escalate` → QA forces `escalate` immediately → `blocked-escalated` + `failure_reason`.
+- Unset (`tmux setenv -gu HARNESS_QA_FORCE`) to fall back to auto-pass. (For a *real* defect instead
+  of the hook, hand-edit the implementation on the branch to violate a rubric item before spawning QA.)
+
+**Dead-QA infra retry:** kill the QA window before it writes a verdict (report stuck at `WIP`); the
+orchestrator increments `qa_run_attempts` and respawns QA; at 2 it sets `blocked-escalated` +
+`failure_reason`.
+
+### 7. Archive (orchestrator step 5)
+
+`done` is set by a (future) merge/archival agent that detects your manual merge; for the toy
+(local-marker, no remote) simulate it by flipping a `qa-passed` task to `done`:
 
 ```bash
 for f in tasks/review/*.yaml; do grep -q '^status: done' "$f" && mv "$f" "tasks/done/$(basename "$f")"; done
 ```
 
-**Verify:** both tasks in `tasks/done/`; all other `tasks/` dirs empty; `active_workers` `[]`.
+**Verify:** archived tasks in `tasks/done/`; `active_workers` `[]`; the tasks board shows cards in
+**Human Review**/**Done**; the next approved spec only releases once every task is `qa-passed`/
+`done`/`blocked`/`blocked-escalated` (run `state_manager next-spec` to confirm the gate).
 
 ---
 
@@ -220,7 +300,7 @@ for f in tasks/review/*.yaml; do grep -q '^status: done' "$f" && mv "$f" "tasks/
 
 ```bash
 tmux kill-session -t harness 2>/dev/null
-rm -rf "$PROJ" ~/wt-TASK-* /tmp/harness-prompts /tmp/spawn-TASK-*
+rm -rf "$PROJ" ~/wt-TASK-* ~/wt-qa-* ~/wt-fix-* /tmp/harness-prompts /tmp/spawn-*
 ```
 
 Trust entries for the deleted worktrees linger in `~/.claude.json` under `projects` — harmless,

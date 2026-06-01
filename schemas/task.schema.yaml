@@ -39,9 +39,15 @@ properties:
       - pr-opened
       - pr-updated
       - qa-failed
+      - qa-passed
       - done
       - blocked
       - blocked-escalated
+    description: >
+      Lifecycle state. The QA retry loop (issue #4): pr-opened triggers QA;
+      qa-failed = needs-changes (Opus fixer pushes to the branch -> pr-updated ->
+      re-QA); qa-passed = looks-good, awaiting the human's manual merge;
+      blocked-escalated = escalate (fundamental mismatch or QA run failed N times).
 
   priority:
     type: string
@@ -66,6 +72,49 @@ properties:
   model:
     type: string
     enum: [sonnet, opus, haiku]
+
+  expected_behavior:
+    type: array
+    items: { type: string }
+    description: >
+      The QA rubric — observable, implementation-agnostic acceptance behaviour
+      authored by task-breakdown from the spec, BEFORE code exists ("given X,
+      observable outcome Y"). The grading truth QA judges against. Vocabulary
+      tracks the task layer (backend = API/data contract, frontend = UI
+      behaviour, E2E = journey). Worker builds to it; QA tests against it.
+
+  branch:
+    type: [string, "null"]
+    description: >
+      The git branch for this task's PR (task/<id>). Empty/null at creation;
+      the worker fills it when it opens the PR. Empty-vs-filled is the worker's
+      fix-mode signal: a fresh task (empty) creates the branch + gh pr create;
+      a qa-failed task (filled) means fix mode — push to this branch, no new PR.
+
+  qa_instructions:
+    type: [string, "null"]
+    description: >
+      Path to the worker-authored QA recipe (qa-instructions-<id>.md): how to
+      drive THIS feature (routes/payloads for backend, navigate + interactions
+      for frontend) plus the worker's claimed I/O. A map for QA, never the rubric.
+
+  qa_report:
+    type: [string, "null"]
+    description: Path to the QA agent's report (qa-report-<id>.md). Its status field is the durable verdict signal.
+
+  failure_reason:
+    type: [string, "null"]
+    description: >
+      Written by the orchestrator when a task escalates/blocks (escalate verdict,
+      or QA run failed N times) so the human sees why in-file without digging.
+
+  qa_run_attempts:
+    type: integer
+    minimum: 0
+    description: >
+      Infra-retry counter for a QA run that died without a verdict (review file
+      stuck at WIP). Orchestrator increments on each dead run; at N (=2) it
+      escalates. Distinct from the verdict retry ladder (qa_failure_count).
 
   linear_id:
     type: [string, "null"]
@@ -92,11 +141,17 @@ properties:
   qa_failure_count:
     type: integer
     minimum: 0
-    description: Incremented by orchestrator on each QA FAIL. Escalates at 2, hard-stops at 3.
+    description: >
+      Verdict-ladder pass counter (the ladder is ONE retry, not 3 strikes).
+      0 = first QA pass; 1 = re-QA after one Opus fix. On the 2nd pass anything
+      but looks-good escalates — there is no count >= 2 in normal operation.
 
   qa_out_of_scope_bugs:
     type: array
     items: { type: string, pattern: "^BUG-[0-9]+$" }
+    description: >
+      Reserved and currently UNUSED. Out-of-scope bugs QA notices are ignored by
+      the retry loop; the future random-bugs subsystem owns them.
 
   suggested_files_to_read:
     type: array

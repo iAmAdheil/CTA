@@ -114,11 +114,13 @@ def kill_session(session: str | None = None) -> None:
 # Worktree management
 # ---------------------------------------------------------------------------
 
-def _resolve_worktree_path(task_id: str, worktree: str | None) -> Path:
+def _resolve_worktree_path(task_id: str, worktree: str | None, label: str = "worker") -> Path:
     if worktree:
         return Path(worktree).expanduser().resolve()
-    # Sibling of cwd, named after the task
-    return (Path.cwd().parent / f"wt-{task_id}").resolve()
+    # Sibling of cwd, named after the task. Non-worker agents (qa/fixer) get a
+    # label-prefixed path so they never collide with a worker's worktree dir.
+    stem = f"wt-{task_id}" if label == "worker" else f"wt-{label}-{task_id}"
+    return (Path.cwd().parent / stem).resolve()
 
 
 def resolve_base_branch(
@@ -157,11 +159,17 @@ def create_worktree(
     *,
     base_branch: str = DEFAULT_BASE_BRANCH,
     repo_root: str | os.PathLike | None = None,
+    new_branch: bool = True,
 ) -> Path:
-    """`git worktree add -b <branch> <path> <base_branch>`. Returns the path.
+    """Add a git worktree at `path`. Returns the path. Idempotent on `path`.
 
-    Idempotent on `path`: if a worktree already exists there, it's returned
-    as-is without error.
+    - `new_branch=True` (default, fresh worker): `git worktree add -b <branch>
+      <path> <base_branch>` — creates the branch. Falls back to checking out an
+      existing branch if `-b` reports it already exists.
+    - `new_branch=False` (QA / Opus fixer): `git worktree add <path> <branch>` —
+      checks out the EXISTING `task/<id>` branch (the PR branch the worker left
+      behind). Under Option B only one worktree holds the branch at a time
+      (the worker's was removed at pr-opened), so this never collides.
     """
     p = Path(path).expanduser().resolve()
     cwd = str(repo_root) if repo_root else None
@@ -170,6 +178,15 @@ def create_worktree(
     if out.returncode == 0 and f"worktree {p}" in out.stdout:
         return p
     p.parent.mkdir(parents=True, exist_ok=True)
+    if not new_branch:
+        # Check out an existing branch into a new worktree.
+        cmd = ["git", "worktree", "add", str(p), branch]
+        res = subprocess.run(cmd, cwd=cwd, text=True, capture_output=True)
+        if res.returncode != 0:
+            raise RuntimeError(
+                f"git worktree add (existing branch {branch!r}) failed: {res.stderr.strip()}"
+            )
+        return p
     cmd = ["git", "worktree", "add", "-b", branch, str(p), base_branch]
     res = subprocess.run(cmd, cwd=cwd, text=True, capture_output=True)
     if res.returncode != 0:
@@ -285,6 +302,9 @@ def provision_worker(
     window: int | None = None,
     window_name: str | None = None,
     session_id: str | None = None,
+    branch: str | None = None,
+    new_branch: bool = True,
+    label: str = "worker",
 ) -> dict[str, Any]:
     """Phase 1 of spawning: set everything up *except* starting the worker.
 
@@ -303,21 +323,22 @@ def provision_worker(
     """
     sess = ensure_session(session)
     sid = session_id or str(uuid.uuid4())
-    wt_path = _resolve_worktree_path(task_id, worktree)
-    branch = f"task/{task_id}"
+    wt_path = _resolve_worktree_path(task_id, worktree, label)
+    branch = branch or f"task/{task_id}"
     base = resolve_base_branch(base_branch, repo_root)
 
-    create_worktree(branch, wt_path, base_branch=base, repo_root=repo_root)
+    create_worktree(branch, wt_path, base_branch=base, repo_root=repo_root, new_branch=new_branch)
 
     # Pre-trust the worktree so the worker doesn't hang on the folder-trust
     # dialog (no human to accept it in an unattended run).
     pretrust_path(wt_path)
 
-    # Persist the prompt so the spawn helper can read it without quoting.
-    prompt_file = _prompt_dir() / f"{task_id}.prompt.txt"
+    # Persist the prompt so the spawn helper can read it without quoting. The
+    # label keeps a QA/fixer prompt from clobbering the worker's on the same task.
+    prompt_file = _prompt_dir() / f"{task_id}.{label}.prompt.txt"
     prompt_file.write_text(prompt, encoding="utf-8")
 
-    name = window_name or f"worker-{task_id}"
+    name = window_name or f"{label}-{task_id}"
     target = f"{sess}:{window}" if window is not None else sess
 
     # Reserve the window with an idle hold command. `launch_worker` replaces it.
@@ -351,21 +372,27 @@ def launch_worker(
     prompt_file: str | os.PathLike,
     window: int | str,
     session: str | None = None,
+    model: str | None = None,
 ) -> dict[str, Any]:
     """Phase 2 of spawning: start the worker in an already-provisioned window.
 
     `tmux respawn-window -k` kills the placeholder hold command and runs the
-    spawn helper (which `exec`s `claude --session-id <uuid> "$(cat <prompt>)"`)
-    in the same window index. From here the worker is live.
+    spawn helper (which `exec`s `claude [--model M] --session-id <uuid>
+    "$(cat <prompt>)"`) in the same window index. From here the worker is live.
 
-    `window` may be an int index or a full `session:index` target.
+    `model` is passed to `claude --model` — used to run the Opus fixer as opus;
+    omit (None) to use claude's default. `window` may be an int index or a full
+    `session:index` target.
     """
     sess = session or _session_name()
     target = window if (isinstance(window, str) and ":" in window) else f"{sess}:{window}"
+    helper_cmd = f"{SPAWN_HELPER} {worktree!s} {session_id} {prompt_file!s}"
+    if model:
+        helper_cmd += f" {model}"
     cmd = [
         "tmux", "respawn-window", "-k",
         "-t", str(target),
-        f"{SPAWN_HELPER} {worktree!s} {session_id} {prompt_file!s}",
+        helper_cmd,
     ]
     _run(cmd)
     return {"session": sess, "window_target": str(target), "launched": True}
@@ -382,6 +409,10 @@ def spawn_worker(
     window: int | None = None,
     window_name: str | None = None,
     session_id: str | None = None,
+    branch: str | None = None,
+    new_branch: bool = True,
+    label: str = "worker",
+    model: str | None = None,
 ) -> dict[str, Any]:
     """Provision + launch a worker in one call (the worker starts immediately).
 
@@ -407,6 +438,9 @@ def spawn_worker(
         window=window,
         window_name=window_name,
         session_id=session_id,
+        branch=branch,
+        new_branch=new_branch,
+        label=label,
     )
     launch_worker(
         worktree=info["worktree"],
@@ -414,6 +448,7 @@ def spawn_worker(
         prompt_file=info["prompt_file"],
         window=info["window"],
         session=info["session"],
+        model=model,
     )
     info["launched"] = True
     return info
@@ -478,6 +513,10 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument("--session", default=None)
         p.add_argument("--window", type=int, default=None, help="Target window index (default: tmux auto-assigns)")
         p.add_argument("--session-id", default=None, help="Pre-allocated claude --session-id UUID (default: generate one)")
+        p.add_argument("--branch", default=None, help="Branch name (default: task/<task-id>)")
+        p.add_argument("--existing-branch", action="store_true", help="Check out an existing branch instead of creating one (QA / Opus fixer on the worker's PR branch)")
+        p.add_argument("--label", default="worker", help="Agent kind: names the window + prompt file + default worktree (worker|qa|fixer)")
+        p.add_argument("--model", default=None, help="claude --model for the spawned agent (e.g. opus for the fixer); spawn-worker only")
 
     p_spawn = sub.add_parser("spawn-worker", help="Provision + launch a worker in one call (worker starts immediately)")
     _add_provision_args(p_spawn)
@@ -491,6 +530,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_launch.add_argument("--prompt-file", required=True, help="prompt_file returned by provision-worker")
     p_launch.add_argument("--window", required=True, help="Window index (or session:index) returned by provision-worker")
     p_launch.add_argument("--session", default=None)
+    p_launch.add_argument("--model", default=None, help="claude --model for the spawned agent (e.g. opus for the QA-fail fixer)")
 
     p_nudge = sub.add_parser("nudge", help="Send text to a running worker window")
     p_nudge.add_argument("--window", required=True, help="window-id (e.g. '1' or 'harness:1')")
@@ -518,7 +558,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd in ("spawn-worker", "provision-worker"):
         prompt = args.prompt if args.prompt is not None else Path(args.prompt_file).read_text(encoding="utf-8")
         fn = spawn_worker if args.cmd == "spawn-worker" else provision_worker
-        info = fn(
+        kwargs = dict(
             task_id=args.task_id,
             prompt=prompt,
             worktree=args.worktree,
@@ -527,7 +567,13 @@ def main(argv: list[str] | None = None) -> int:
             session=args.session,
             window=args.window,
             session_id=args.session_id,
+            branch=args.branch,
+            new_branch=not args.existing_branch,
+            label=args.label,
         )
+        if args.cmd == "spawn-worker":
+            kwargs["model"] = args.model
+        info = fn(**kwargs)
         json.dump(info, sys.stdout, indent=2)
         sys.stdout.write("\n")
         return 0
@@ -539,6 +585,7 @@ def main(argv: list[str] | None = None) -> int:
             prompt_file=args.prompt_file,
             window=args.window,
             session=args.session,
+            model=args.model,
         )
         json.dump(info, sys.stdout, indent=2)
         sys.stdout.write("\n")
