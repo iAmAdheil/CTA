@@ -19,7 +19,7 @@ The key property of everything in this directory: **it is linked from a task or 
 Add a `references` field to the task YAML:
 
 ```yaml
-# tasks/backlog/TASK-051.yaml
+# tasks/data-export/backlog/TASK-051.yaml
 id: TASK-051
 title: "Export modal UI"
 spec: "docs/01-specs/feature-data-export.md"

@@ -53,7 +53,7 @@ agent-harness/
 
 **5. Write `scripts/setup.sh`**
 The script a developer runs once in a new project repo. Creates:
-- `tasks/backlog/`, `in-progress/`, `review/`, `done/`
+- `tasks/` (only — the per-feature workspace `tasks/<feature>/{backlog,in-progress,review,done}/` + `board.md` is created on demand by the task-breakdown agent when a spec is broken down, not pre-created here)
 - `docs/specs/`, `docs/adrs/`, `docs/active-features/`
 - `agent-prompts/` symlink → `~/agent-harness/agent-prompts/`
 - Starter `CLAUDE.md` with section placeholders
@@ -118,11 +118,11 @@ python ~/agent-harness/harness/orchestrator.py
 ```
 
 **Done when:**
-- [ ] Manually create `tasks/backlog/TASK-001.yaml` with `status: backlog`, `depends_on: []`
+- [ ] Manually create `tasks/data-export/backlog/TASK-001.yaml` with `status: backlog`, `depends_on: []`, `feature: data-export`
 - [ ] Start the orchestrator — it detects TASK-001 and logs `[TELEGRAM] 🔧 TASK-001 started on pane %7`
 - [ ] A new pane opens in the shared `agents` window with a Claude Code session
 - [ ] Manually set `status: pr-opened` in the task file — orchestrator logs `[TELEGRAM] 🔀 PR opened`
-- [ ] Manually set `status: done` — orchestrator moves the file to `tasks/done/` and logs merge
+- [ ] Manually set `status: done` — orchestrator moves the file to `tasks/data-export/done/` and logs merge
 
 ---
 
@@ -156,13 +156,13 @@ claude --print "$(cat ~/agent-harness/agent-prompts/task-breakdown.md)" \
 
 **3. Wire into orchestrator**
 
-When `status: approved` detected on a new spec file → call `run-breakdown.sh` → wait for task files to appear in `tasks/backlog/`.
+When `status: approved` detected on a new spec file → call `run-breakdown.sh` → wait for task files to appear in the spec's feature workspace `tasks/<feature>/backlog/` (where `<feature>` is the spec's frontmatter `id`).
 
 **Done when:**
 - [ ] Write a simple 3-AC spec in `docs/specs/`
 - [ ] Set `status: approved`
 - [ ] Orchestrator invokes task breakdown
-- [ ] 2–3 task files appear in `tasks/backlog/` with correct frontmatter
+- [ ] 2–3 task files appear in `tasks/<feature>/backlog/` with correct frontmatter (including `feature:`)
 - [ ] Dependency fields are coherent (no circular deps, correct blocking relationships)
 
 ---

@@ -14,7 +14,7 @@ Snapshot of what's actually been built and verified in `/Users/abhishekgupta/age
 - [x] `templates/qa-report.md` — AC table, automated-test pass, manual-nav pass, out-of-scope findings, verdict (`PASS` / `CONDITIONAL PASS` / `FAIL`)
 - [x] `schemas/task.schema.yaml` — JSON Schema for task files, enumerates the eight valid `status` values
 - [x] `schemas/orchestrator-state.schema.yaml` — JSON Schema for `orchestrator-state.yaml`
-- [x] `scripts/setup.sh` — idempotent project-repo bootstrap. Creates `tasks/{backlog,in-progress,review,done}/`, `docs/{specs,adrs,active-features}/`, `agent-prompts/` symlink to the harness repo, starter `CLAUDE.md` (with placeholder section headers), empty `orchestrator-state.yaml`, and adds `.gitignore` entries
+- [x] `scripts/setup.sh` — idempotent project-repo bootstrap. Creates `tasks/` (the per-feature `tasks/<feature>/{backlog,in-progress,review,done}/` + `board.md` workspace is created on demand by task-breakdown), `docs/{specs,adrs,active-features}/`, `agent-prompts/` symlink to the harness repo, starter `CLAUDE.md` (with placeholder section headers), empty `orchestrator-state.yaml`, and adds `.gitignore` entries
 - [x] Verified `setup.sh` on a clean tempdir — first run produces the full structure; second run is a no-op
 - [x] Schemas validated as parseable YAML; task template validates against the task schema
 
@@ -47,7 +47,7 @@ Wrappers-only scope. The end-to-end loop demo is deferred until `orchestrator.md
 
 ## Stage 3 — Task Breakdown Scaffolding
 
-Scaffolding-only scope. The `/task-breakdown` skill (the actual breakdown agent) is deferred to the agent-prompts session. The end-to-end demo (approved spec → task files in `tasks/backlog/`) waits for that skill to exist.
+Scaffolding-only scope. The `/task-breakdown` skill (the actual breakdown agent) is deferred to the agent-prompts session. The end-to-end demo (approved spec → task files in `tasks/<feature>/backlog/`) waits for that skill to exist.
 
 - [x] `templates/spec.md` — spec template. Frontmatter (`status`, `priority`, `linear_epic_id`), and sections for Overview, Acceptance Criteria, Out of Scope, References, Implementation Notes
 - [x] `scripts/run-breakdown.sh` — thin wrapper that runs `claude --print --model sonnet --max-budget-usd 1.00 "/task-breakdown <spec-path>"`. Validates spec path; budget cap + model overridable via env vars

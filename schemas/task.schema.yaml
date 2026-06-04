@@ -1,7 +1,12 @@
 $schema: "https://json-schema.org/draft/2020-12/schema"
 $id: "task.schema.yaml"
 title: Task
-description: A single unit of work executed by a worker agent. One file per task in tasks/{backlog,in-progress,review,done}/.
+description: >
+  A single unit of work executed by a worker agent. Task files live in a
+  feature-scoped workspace: tasks/<feature>/{backlog,in-progress,review,done}/,
+  where <feature> is the implementing spec's frontmatter id. The orchestrator
+  moves the file between the four state subdirs of its feature workspace; the
+  grandparent directory of any task file is its feature.
 type: object
 additionalProperties: false
 
@@ -9,6 +14,7 @@ required:
   - id
   - title
   - spec
+  - feature
   - status
   - priority
   - depends_on
@@ -30,6 +36,17 @@ properties:
   spec:
     type: string
     description: Path (from project root) to the spec this task implements.
+
+  feature:
+    type: string
+    minLength: 1
+    description: >
+      The feature-workspace slug this task belongs to — the implementing spec's
+      frontmatter id (e.g. "feature-data-export"). Authored by task-breakdown.
+      This is the <feature> segment of the task's path
+      (tasks/<feature>/<state>/<id>.yaml) and the docs/04-active-features/<feature>/
+      dir. Redundant with the path on purpose: it keeps the task file
+      self-describing for board updates and reconcile even if read in isolation.
 
   status:
     type: string

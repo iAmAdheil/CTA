@@ -80,7 +80,7 @@ These never run simultaneously. The orchestrator queues them into a single reuse
 - **Model:** Sonnet
 - **Role:** Decompose an approved spec into atomic task files with dependency frontmatter.
 - **Inputs:** Approved spec, existing ADRs, CLAUDE.md
-- **Outputs:** N task files written to `tasks/backlog/`, Linear epic + issues created
+- **Outputs:** the feature workspace `tasks/<feature>/{backlog,in-progress,review,done}/` + `board.md`, N task files written to `tasks/<feature>/backlog/`, Linear epic + issues created
 - **Lifespan:** ~2 minutes, single shot
 - **Triggered by:** Orchestrator detects `status: approved` on a new spec
 
@@ -108,7 +108,7 @@ These never run simultaneously. The orchestrator queues them into a single reuse
 - **Model:** Opus
 - **Pane:** the shared-slot pane in the `agents` window (run at 6am daily)
 - **Role:** Re-prioritize the backlog. Read all backlog tasks, current Linear state, recent decisions. Reorder task priority fields. Post daily plan to Telegram.
-- **Inputs:** All `tasks/backlog/*.yaml`, Linear state, recent `decisions.md` entries
+- **Inputs:** All backlog tasks across every feature (`tasks/*/backlog/*.yaml`), Linear state, recent `decisions.md` entries
 - **Outputs:** Updated priority fields on task files, Telegram daily plan message
 - **Lifespan:** ~5 minutes, once daily
 

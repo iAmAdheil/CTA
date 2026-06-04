@@ -228,6 +228,28 @@ def load_tasks_in(directory: str | os.PathLike) -> list[dict[str, Any]]:
     return tasks
 
 
+def load_tasks_by_state(
+    tasks_root: str | os.PathLike,
+    state: str,
+) -> list[dict[str, Any]]:
+    """Load every task in a given state across ALL feature workspaces.
+
+    Task files live feature-scoped at tasks/<feature>/<state>/<id>.yaml, so a
+    state's tasks are spread across one subdir per active feature. This sweeps
+    every feature workspace (tasks/*/<state>/) and returns the union — the
+    serial-per-spec gate and dependency resolution both reason over the whole
+    pool regardless of which feature owns each task.
+    """
+    root = Path(tasks_root)
+    if not root.exists():
+        return []
+    tasks: list[dict[str, Any]] = []
+    for feature_dir in sorted(root.iterdir()):
+        if feature_dir.is_dir():
+            tasks.extend(load_tasks_in(feature_dir / state))
+    return tasks
+
+
 # ---------------------------------------------------------------------------
 # Spec discovery + serial-per-spec gate
 # ---------------------------------------------------------------------------
@@ -251,10 +273,10 @@ def _read_spec_frontmatter(path: Path) -> dict[str, Any]:
 # Statuses that mean "the harness still has automated work to do on this task".
 # While ANY task is in one of these, the serial gate holds the next spec. The QA
 # retry loop (issue #4) is why this is status-based, not directory-based:
-# pr-opened/pr-updated/qa-failed tasks live in tasks/review/ but are NOT drained —
-# they mean an async QA agent or an Opus fixer is (or will be) running. The next
-# spec releases only once every task reaches a "now handled by the human" state:
-# qa-passed, done, blocked, blocked-escalated.
+# pr-opened/pr-updated/qa-failed tasks live in the feature's review/ subdir but
+# are NOT drained — they mean an async QA agent or an Opus fixer is (or will be)
+# running. The next spec releases only once every task reaches a "now handled by
+# the human" state: qa-passed, done, blocked, blocked-escalated.
 ACTIVE_STATUSES = frozenset({
     "backlog", "in-progress", "pr-opened", "pr-updated", "qa-failed",
 })
@@ -280,20 +302,21 @@ def get_next_spec(
 
     Serial-per-spec gate: only one spec is worked at a time. A spec counts as
     "still being worked" while any task has a status in `ACTIVE_STATUSES`
-    (regardless of which tasks/ subdir holds it — QA-loop tasks sit in review/
-    but are still active). So:
+    (regardless of which feature workspace or state subdir holds it — QA-loop
+    tasks sit in review/ but are still active). So:
 
-      - If ANY task (in backlog/, in-progress/, or review/) is active, return
-        None (hold — the current spec hasn't cleared the QA loop yet).
+      - If ANY task (in any feature's backlog/, in-progress/, or review/) is
+        active, return None (hold — the current spec hasn't cleared the QA loop
+        yet).
       - Otherwise pick the highest-priority spec with `status: approved`
         (critical → high → medium → low, tie-broken by filename) and return
         its path. None if there are no approved specs.
     """
     tasks_root = Path(tasks_root)
     all_tasks = (
-        load_tasks_in(tasks_root / "backlog")
-        + load_tasks_in(tasks_root / "in-progress")
-        + load_tasks_in(tasks_root / "review")
+        load_tasks_by_state(tasks_root, "backlog")
+        + load_tasks_by_state(tasks_root, "in-progress")
+        + load_tasks_by_state(tasks_root, "review")
     )
     if any(t.get("status") in ACTIVE_STATUSES for t in all_tasks):
         return None
@@ -349,7 +372,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_run = sub.add_parser(
         "runnable",
-        help="Print backlog task IDs whose deps are all satisfied (every dep is done = merged into the feature branch; scans all task state dirs)",
+        help="Print backlog task IDs whose deps are all satisfied (every dep is done = merged into the feature branch; sweeps every feature's task state dirs)",
     )
     p_run.add_argument(
         "--tasks-root",
@@ -410,16 +433,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "runnable":
         tasks_root = Path(args.tasks_root)
-        backlog = load_tasks_in(tasks_root / "backlog")
+        backlog = load_tasks_by_state(tasks_root, "backlog")
         # A dependency is satisfied when its parent is `done` (merged into the
-        # feature branch). We scan every state dir and select by status rather
-        # than by location, so a task that's `done` but not yet archived to done/
-        # still counts.
+        # feature branch). We sweep every feature's state dirs and select by
+        # status rather than by location, so a task that's `done` but not yet
+        # archived to done/ still counts.
         all_tasks = (
             backlog
-            + load_tasks_in(tasks_root / "in-progress")
-            + load_tasks_in(tasks_root / "review")
-            + load_tasks_in(tasks_root / "done")
+            + load_tasks_by_state(tasks_root, "in-progress")
+            + load_tasks_by_state(tasks_root, "review")
+            + load_tasks_by_state(tasks_root, "done")
         )
         satisfied_ids = [
             t.get("id") for t in all_tasks

@@ -161,7 +161,7 @@ Set `status: approved` in the frontmatter. Add a Kanban card in `_kanban/feature
 tmux attach -t main
 # Window 0: orchestrator detects new approved spec
 # → invokes Task Breakdown Agent (window 6)
-# → task files appear in tasks/backlog/
+# → task files appear in tasks/<feature>/backlog/ (feature = spec's frontmatter id)
 # → worker spawned (window 1)
 # → Telegram notification sent
 ```

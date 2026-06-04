@@ -38,7 +38,9 @@ The real `/task-breakdown` and `/worker` skills live (user-scope) at
 test stubs:
 
 - **`/task-breakdown <spec>`** — reads the spec's acceptance criteria, its referenced ADRs, and
-  `CLAUDE.md`, then shapes a *dependency-aware* set of schema-valid task YAMLs into `tasks/backlog/`
+  `CLAUDE.md`, then creates the feature workspace `tasks/<feature>/{backlog,in-progress,review,done}/`
+  + `board.md` (here `<feature>` = the spec id `todo-app`) and shapes a *dependency-aware* set of
+  schema-valid task YAMLs into `tasks/<feature>/backlog/`
   (correct `depends_on`/`blocks`/`can_parallelize_with`). Task count is driven by the ACs, not fixed.
 - **`/worker`** — runs in its worktree, reads its task by **absolute** path (control-plane, ADR-001)
   and the spec/`CLAUDE.md`/code by relative path, implements the task for real, runs the project's
@@ -168,8 +170,9 @@ git add CLAUDE.md .gitignore docs/specs/_template.md && git commit -qm "scaffold
 > `HARNESS_QA_VERIFY` (§6) targets — the injected bug violates one of these contracts so real QA
 > catches it.
 
-**Verify:** `tasks/{backlog,in-progress,review,done}/` and `docs/specs/` exist;
-`orchestrator-state.yaml` present; on branch `main`.
+**Verify:** `tasks/` and `docs/specs/` exist; `orchestrator-state.yaml` present; on branch `main`.
+(The per-feature `tasks/<feature>/{backlog,in-progress,review,done}/` workspace doesn't exist yet —
+task-breakdown creates it in step 3.)
 
 ### 2. Drop an approved spec — and COMMIT it
 
@@ -240,12 +243,12 @@ conda run -n harness python -m harness.state_manager read                       
 bash ~/agent-harness/scripts/run-breakdown.sh docs/specs/todo-app.md
 ```
 
-**Verify:** a handful of files in `tasks/backlog/` (count is AC-driven — expect ~3–4: a scaffold
+**Verify:** a handful of files in `tasks/todo-app/backlog/` (count is AC-driven — expect ~3–4: a scaffold
 task, the API CRUD task(s), and the React UI task, wired with `depends_on` so the UI waits on the
 API), all schema-valid:
 
 ```bash
-python3 -c "import yaml,jsonschema,glob; s=yaml.safe_load(open('$HOME/agent-harness/schemas/task.schema.yaml')); [jsonschema.validate(yaml.safe_load(open(f)),s) or print(f,'VALID') for f in glob.glob('tasks/backlog/*.yaml')]"
+python3 -c "import yaml,jsonschema,glob; s=yaml.safe_load(open('$HOME/agent-harness/schemas/task.schema.yaml')); [jsonschema.validate(yaml.safe_load(open(f)),s) or print(f,'VALID') for f in glob.glob('tasks/todo-app/backlog/*.yaml')]"
 ```
 
 Then flip the spec frontmatter `approved → in-breakdown` (the one-way latch).
@@ -278,11 +281,11 @@ with an absolute task-file path in the prompt. This manual flow uses the one-sho
 
 ```bash
 cd "$PROJ"
-mv tasks/backlog/TASK-001.yaml tasks/in-progress/TASK-001.yaml
+mv tasks/todo-app/backlog/TASK-001.yaml tasks/todo-app/in-progress/TASK-001.yaml
 PROMPT=$(mktemp /tmp/spawn-TASK-001.XXXXXX)
 cat > "$PROMPT" <<EOF
 You are a worker on the agent-harness. Follow the /worker skill.
-TASK_FILE: $PROJ/tasks/in-progress/TASK-001.yaml
+TASK_FILE: $PROJ/tasks/todo-app/in-progress/TASK-001.yaml
 Your git worktree is your current directory (branch task/TASK-001). Read TASK_FILE
 (absolute path) plus the spec/CLAUDE.md/code it points at (relative paths in your
 worktree), implement the task for real, satisfy the project's Definition of Done,
@@ -296,7 +299,7 @@ conda run -n harness python -m harness.tmux_manager spawn-worker --task-id TASK-
 Then record the worker (use the returned `worktree`/`pane`):
 
 ```bash
-# edit tasks/in-progress/TASK-001.yaml: status: in-progress, worktree, pane, started, assigned_to
+# edit tasks/todo-app/in-progress/TASK-001.yaml: status: in-progress, worktree, pane, started, assigned_to
 conda run -n harness python -m harness.state_manager add-worker --task-id TASK-001 \
   --worktree ~/wt-TASK-001 --pane %7 --started 2026-01-01T00:00:00Z --model sonnet
 ```
@@ -310,8 +313,8 @@ scaffold → (API, …) → UI.
 
 ```bash
 tmux list-panes -s -t harness                               # orchestrator pane + agent panes
-for i in $(seq 1 40); do grep '^status:' tasks/in-progress/*.yaml; sleep 3
-  grep -ql 'pr-opened\|blocked' tasks/in-progress/*.yaml && break; done
+for i in $(seq 1 40); do grep '^status:' tasks/todo-app/in-progress/*.yaml; sleep 3
+  grep -ql 'pr-opened\|blocked' tasks/todo-app/in-progress/*.yaml && break; done
 tmux capture-pane -p -t %7 -S -40 | tail                   # see the worker's transcript (its pane id)
 git -C ~/wt-TASK-001 log --oneline -1                       # the worker's commit exists
 ```
@@ -329,24 +332,24 @@ one-per-task, removed later when the task goes terminal — not at this handoff)
 ```bash
 conda run -n harness python -m harness.tmux_manager kill-pane --pane %7
 conda run -n harness python -m harness.state_manager remove-worker --task-id TASK-001
-mv tasks/in-progress/TASK-001.yaml tasks/review/TASK-001.yaml
+mv tasks/todo-app/in-progress/TASK-001.yaml tasks/todo-app/review/TASK-001.yaml
 # NOTE: do NOT remove-worktree here — the QA agent (next section) reuses ~/wt-TASK-001.
 ```
 
 **Verify:** once the last agent pane is killed the `agents` window closes, leaving only window 0
-(`orchestrator`); `active_workers` is `[]`; the torn-down task(s) in `tasks/review/`. **`git worktree
-list` still shows `wt-TASK-001`** — that's expected now; it's reclaimed only when the task reaches
-`qa-passed` / `blocked-escalated` / `blocked` / `done`.
+(`orchestrator`); `active_workers` is `[]`; the torn-down task(s) in `tasks/todo-app/review/`. **`git
+worktree list` still shows `wt-TASK-001`** — that's expected now; it's reclaimed only when the task
+reaches `qa-passed` / `blocked-escalated` / `blocked` / `done`.
 
 ### 6. QA cycle (orchestrator step 4) — issue #4
 
-QA is now built. After teardown a `pr-opened` task sits in `tasks/review/`. The orchestrator (step
+QA is now built. After teardown a `pr-opened` task sits in `tasks/todo-app/review/`. The orchestrator (step
 4D) spawns an **async QA agent** on the worker's branch; here we drive it by hand.
 
 ```bash
 TID=TASK-001
 # the worker filled `branch:` and wrote a qa-instructions-<id>.md recipe at pr-opened — confirm:
-grep -E '^(branch|qa_instructions|status):' tasks/review/$TID.yaml
+grep -E '^(branch|qa_instructions|status):' tasks/todo-app/review/$TID.yaml
 
 # spawn QA on the EXISTING branch — reuses the worker's persistent worktree (role: qa).
 # provision-worker resolves ../wt-$TID from the task id, so $WT below is the SAME
@@ -354,7 +357,7 @@ grep -E '^(branch|qa_instructions|status):' tasks/review/$TID.yaml
 PF=$(mktemp /tmp/spawn-$TID.XXXXXX)
 cat > "$PF" <<EOF
 You are the QA agent on the agent-harness. Follow the /qa-agent skill.
-TASK_FILE: $PWD/tasks/review/$TID.yaml
+TASK_FILE: $PWD/tasks/todo-app/review/$TID.yaml
 Your worktree (cwd) is on branch task/$TID. Read TASK_FILE for the expected_behavior
 rubric and qa_instructions recipe, RUN the feature, and write your verdict
 (looks-good / needs-changes / escalate) into the qa-report status. Do not edit the task status.
@@ -370,7 +373,7 @@ conda run -n harness python -m harness.tmux_manager launch-worker --worktree "$W
 **Watch** the QA agent's pane run the functions, then read the verdict:
 
 ```bash
-grep -m1 '^\*\*status:\*\*' "$(grep '^qa_report:' tasks/review/$TID.yaml | awk '{print $2}')"
+grep -m1 '^\*\*status:\*\*' "$(grep '^qa_report:' tasks/todo-app/review/$TID.yaml | awk '{print $2}')"
 ```
 
 **Route by verdict** (orchestrator step 4C). **Before spawning ANY QA agent (first or re-QA), reset
@@ -449,10 +452,10 @@ orchestrator increments `qa_run_attempts` and respawns QA; at 2 it sets `blocked
 (local-marker, no remote) simulate it by flipping a `qa-passed` task to `done`:
 
 ```bash
-for f in tasks/review/*.yaml; do grep -q '^status: done' "$f" && mv "$f" "tasks/done/$(basename "$f")"; done
+for f in tasks/todo-app/review/*.yaml; do grep -q '^status: done' "$f" && mv "$f" "tasks/todo-app/done/$(basename "$f")"; done
 ```
 
-**Verify:** archived tasks in `tasks/done/`; `active_workers` `[]`; the tasks board shows cards in
+**Verify:** archived tasks in `tasks/todo-app/done/`; `active_workers` `[]`; the tasks board shows cards in
 **Human Review**/**Done**; the next approved spec only releases once every task is `qa-passed`/
 `done`/`blocked`/`blocked-escalated` (run `state_manager next-spec` to confirm the gate).
 
@@ -478,6 +481,6 @@ See `build-roadmap.md` and the `harness-worker-runtime-gaps` memory for status. 
 |---|---|---|
 | Folder-trust dialog hangs unattended workers | **Fixed** (`tmux_manager.pretrust_path`) | — |
 | Tool-permission prompts hang unattended sessions | **Fixed** (`--dangerously-skip-permissions` in wrappers) | — |
-| Worker's worktree can't see `tasks/in-progress/<id>.yaml` | **Fixed** (ADR-001: gitignored control-plane, absolute-path access) | spawn prompt passes the absolute main-repo path |
+| Worker's worktree can't see `tasks/<feature>/in-progress/<id>.yaml` | **Fixed** (ADR-001: gitignored control-plane, absolute-path access) | spawn prompt passes the absolute main-repo path |
 | `python -m harness.*` not importable; no `run-orchestrator.sh` | **Fixed** (ADR-002: `harness` conda env + editable install, `conda run -n harness`; `run-orchestrator.sh` added) | — |
 | Base branch hardcoded to `main` (broke `master` repos) | **Fixed** (`resolve_base_branch` auto-detects current branch; `HARNESS_BASE_BRANCH` override) | — |

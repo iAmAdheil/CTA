@@ -201,7 +201,8 @@ max_workers: 3           # hard cap on simultaneous workers
 # 2. Every task.depends_on parent is `done` — i.e. merged into the feature
 #    branch (the orchestrator does this automatically on QA pass, so it is NOT
 #    gated on the human's master merge). See feature-lifecycle.md "Feature
-#    integration branch". state_manager `runnable` computes this across all dirs.
+#    integration branch". state_manager `runnable` computes this across all of
+#    every feature's state dirs.
 # 3. The task belongs to the current spec — the harness works one spec at a
 #    time (serial-per-spec), so under normal operation every active worker is
 #    on the same feature. See feature-lifecycle.md "One Spec at a Time".
