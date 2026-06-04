@@ -81,7 +81,7 @@ Atomic writes: write to a `.tmp` file, then `os.rename()` — prevents corruptio
 
 **2. Build `harness/tmux_manager.py`**
 
-Functions: `create_window(name)`, `send_to_window(window_id, text)`, `kill_window(window_id)`, `create_worktree(branch, path)`, `remove_worktree(path)`.
+Functions: `create_pane(name)` (splits a pane into the shared `agents` window, returns a pane ID like `%7`), `send_to_pane(pane_id, text)`, `kill_pane(pane_id)`, `create_worktree(branch, path)`, `remove_worktree(path)`.
 
 All functions are thin wrappers over `subprocess.run(['tmux', ...])`. Test each function manually in a Python REPL before wiring up.
 
@@ -119,8 +119,8 @@ python ~/agent-harness/harness/orchestrator.py
 
 **Done when:**
 - [ ] Manually create `tasks/backlog/TASK-001.yaml` with `status: backlog`, `depends_on: []`
-- [ ] Start the orchestrator — it detects TASK-001 and logs `[TELEGRAM] 🔧 TASK-001 started on window:1`
-- [ ] A new tmux window opens with a Claude Code session
+- [ ] Start the orchestrator — it detects TASK-001 and logs `[TELEGRAM] 🔧 TASK-001 started on pane %7`
+- [ ] A new pane opens in the shared `agents` window with a Claude Code session
 - [ ] Manually set `status: pr-opened` in the task file — orchestrator logs `[TELEGRAM] 🔀 PR opened`
 - [ ] Manually set `status: done` — orchestrator moves the file to `tasks/done/` and logs merge
 

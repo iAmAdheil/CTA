@@ -6,15 +6,18 @@ All agents in the system, their roles, models, and concurrency constraints.
 
 ## tmux Layout at Peak Load
 
+The orchestrator keeps its own window 0. Every *spawned* agent (worker, QA, fixer, the shared-slot agents) is a **pane** in a single shared window named `agents` — each pane identified by its durable tmux pane ID (e.g. `%7`), never a window index.
+
 ```
-window 0  — Orchestrator          (always running)
-window 1  — Worker: TASK-NNN      (feature/branch-a)
-window 2  — Worker: TASK-NNN      (feature/branch-b)
-window 3  — Worker: TASK-NNN      (feature/branch-c)
-window 4  — QA Agent              (current PR)
-window 5  — Review Agent          (same PR, parallel to QA)
-window 6  — Shared slot           (Opus / Task Breakdown / Doc Closeout)
-window 7  — Monitor               (live state, logs, cost)
+window 0  — Orchestrator                        (always running)
+window "agents" — all spawned agents share this one window as panes:
+    pane %1  — Worker: TASK-NNN      (feature/branch-a)
+    pane %2  — Worker: TASK-NNN      (feature/branch-b)
+    pane %3  — Worker: TASK-NNN      (feature/branch-c)
+    pane %4  — QA Agent              (current PR)
+    pane %5  — Review Agent          (same PR, parallel to QA)
+    pane %6  — Shared slot           (Opus / Task Breakdown / Doc Closeout)
+window 7  — Monitor                              (live state, logs, cost)
 ```
 
 ---
@@ -35,7 +38,7 @@ window 7  — Monitor               (live state, logs, cost)
 ## Up to 3–4 Simultaneously
 
 ### Worker Agents
-- **Windows:** 1, 2, 3 (up to max_workers)
+- **Panes:** up to max_workers panes in the shared `agents` window, each with its own pane ID (`%1`, `%2`, `%3`, …)
 - **Model:** Sonnet (Haiku for trivial tasks: copy changes, config tweaks)
 - **Concurrent:** Max 3–4 (configurable in `orchestrator-state.yaml`)
 - **Role:** Execute a single task end-to-end. Read spec + task file + CLAUDE.md. Write code. Open PR. Signal done.
@@ -48,32 +51,30 @@ window 7  — Monitor               (live state, logs, cost)
 
 ## Sequential, One at a Time
 
-### QA Agent
-- **Window:** 4
+### QA Agent  (behavioral, async — issue #4)
 - **Model:** Sonnet
-- **Concurrent:** 1 (QA is sequential — one PR at a time)
-- **Role:** Verify the PR against the spec using automated tests + browser navigation.
-- **Inputs:** PR diff, spec file, staging URL, pre-existing failure list
-- **Outputs:** `qa-report.md` with verdict (PASS / CONDITIONAL / FAIL), Linear comment
-- **Lifespan:** 10–30 minutes per PR
-- **Tools:** Playwright + Stagehand (or Browser Use) for dynamic navigation
-- **Triggered by:** Orchestrator when a worker signals `status: pr-opened`
+- **Mode:** Async tracked agent (in `active_workers` with `role: qa`), its own worktree on the `task/<id>` branch. Bounded by `max_workers` like a worker — within one spec, several tasks can be in QA at once.
+- **Role:** **RUN the feature** and judge observed behaviour against the task's `expected_behavior` rubric. Two checks: does the recipe execute as claimed; does the claimed/observed behaviour satisfy the rubric. **Never reviews the diff.**
+- **Inputs:** task `expected_behavior` (rubric, the grading truth), worker's `qa_instructions` recipe (the map), the project run/launch skill, its worktree
+- **Outputs:** `qa-report-<id>.md` whose `status:` is `WIP` → `looks-good` / `needs-changes` / `escalate` (the durable verdict the orchestrator polls). Does NOT set the task `status`.
+- **Triggered by:** Orchestrator at `status: pr-opened` / `pr-updated` (step 4D)
 
-### Review Agent
-- **Window:** 5
+### Opus Fixer  (worker fix-mode — issue #4)
+- **Model:** Opus
+- **Mode:** Async tracked agent (`role: fixer`), its own worktree on the existing `task/<id>` branch.
+- **Role:** On a `needs-changes` verdict, fix only what QA flagged, push to the **same** branch (no new PR), set `status: pr-updated` → re-QA. The verdict ladder is **one** retry.
+- **Triggered by:** Orchestrator at `status: qa-failed` (step 4D)
+
+### Review Agent  (deferred — build order D)
 - **Model:** Sonnet
-- **Concurrent:** 1 (runs alongside QA, same PR)
-- **Role:** Read the diff, check it against the spec, flag anything wrong before human review.
-- **Inputs:** PR diff, spec, `decisions.md`
-- **Outputs:** GitHub PR review comment via `gh pr review`, summary to Linear
-- **Lifespan:** ~5 minutes
-- **Triggered by:** Same event as QA agent (PR opened)
+- **Role:** A *code* reviewer that reads the diff vs the spec and posts PR comments via `gh pr review`. Separate from QA (behavioral) and **not** part of the retry ladder.
+- **Status:** not yet built.
 
 ---
 
-## On Demand, Short-Lived (Shared Slot — Window 6)
+## On Demand, Short-Lived (Shared Slot)
 
-These never run simultaneously. The orchestrator queues them into the same window.
+These never run simultaneously. The orchestrator queues them into a single reused pane in the shared `agents` window.
 
 ### Task Breakdown Agent
 - **Model:** Sonnet
@@ -105,7 +106,7 @@ These never run simultaneously. The orchestrator queues them into the same windo
 
 ### Backlog Triage Agent
 - **Model:** Opus
-- **Window:** 6 (shared slot, run at 6am daily)
+- **Pane:** the shared-slot pane in the `agents` window (run at 6am daily)
 - **Role:** Re-prioritize the backlog. Read all backlog tasks, current Linear state, recent decisions. Reorder task priority fields. Post daily plan to Telegram.
 - **Inputs:** All `tasks/backlog/*.yaml`, Linear state, recent `decisions.md` entries
 - **Outputs:** Updated priority fields on task files, Telegram daily plan message
@@ -118,7 +119,7 @@ These never run simultaneously. The orchestrator queues them into the same windo
 - Two QA agents (sequential — one PR at a time)
 - Two Opus invocations (orchestrator queues them if two blockers hit at once)
 - Task Breakdown + workers on the same feature (breakdown must complete before workers start)
-- Two agents in the shared slot (window 6 is a single-occupancy slot)
+- Two agents in the shared slot (the shared-slot pane is single-occupancy)
 
 ---
 

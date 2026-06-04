@@ -89,8 +89,9 @@ ladder and **owner-based verdicts** (`looks-good` / `needs-changes` / `escalate`
   (`qa_instructions`), project run/launch skill, own worktree. Two checks (execute recipe;
   recipe-vs-rubric). Writes `qa-report-<TASK-ID>.md` with `status:` WIP→verdict. Browser nav
   (Playwright/Stagehand) only for web apps w/ a runnable URL — skip for CLI/toy/MVH.
-- [ ] Write `scripts/run-qa.sh`
-- [ ] `tmux_manager` — variant that provisions a worktree on an **existing** branch (QA + fixer).
+- [x] `tmux_manager` — variant that provisions a worktree on an **existing** branch (QA + fixer) — `--existing-branch`.
+- [x] **Wire a real test environment + remove the interim auto-pass.** `/qa-agent` now drives features through real tooling — the **`playwright-cli`** skill for web/frontend, the **`bruno`** (`bru`) skill for backend APIs; CLI/library projects run the compile/unit-test DoD (no browser). The interim `HARNESS_QA_AUTOPASS` gate has been removed from the qa-agent skill and the test playbook. Two test hooks remain (mutually exclusive): **`HARNESS_QA_FORCE`** (QA-side) forces a verdict to drive the retry/escalate **routing** deterministically; **`HARNESS_QA_VERIFY`** (orchestrator-side, step 4S) injects one real behavioral defect into a worker's branch after `pr-opened` so **real** QA has to catch it and the Opus fix loop heal it — verifying QA itself works, not just the plumbing. The throwaway test project is now a small Express + React todo app (playbook §6) so behavioral QA has something real to drive.
+- [N/A] ~~`scripts/run-qa.sh`~~ — not needed; QA is async (spawned via `tmux_manager` like a worker), not a sync `claude --print` wrapper.
 
 **B. Orchestrator triggers QA** (async, tracked):
 - [ ] At `pr-opened`/`pr-updated`: spawn QA into `active_workers` with `role: qa`, own worktree.

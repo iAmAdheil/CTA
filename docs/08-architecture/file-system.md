@@ -148,7 +148,8 @@ docs/
 | `tasks/done/` | Orchestrator (moves files) | Orchestrator (dependency resolution) |
 | `04-active-features/*/progress.md` | Workers | Orchestrator (watches for BLOCKER), You |
 | `04-active-features/*/decisions.md` | Workers, Orchestrator (Opus output) | Workers, Review Agent |
-| `04-active-features/*/qa-report.md` | QA Agent | Orchestrator, You |
+| `04-active-features/*/qa-instructions-<id>.md` | Worker (the QA recipe) | QA Agent |
+| `04-active-features/*/qa-report-<id>.md` | QA Agent (verdict in `status:`) | Orchestrator, You |
 | `orchestrator-state.yaml` | Orchestrator | Orchestrator |
 | `CLAUDE.md` | You | Every agent at session start |
 | `10-product/` | You | You, Opus (during ADR check and spec review) |
@@ -163,14 +164,16 @@ docs/
 active_workers:
   - task_id: TASK-051
     worktree: ../project-export-core
-    window: 1
+    pane: "%7"             # pane id in the shared agents window
     started: "2026-05-27T14:30:00"
     model: sonnet
+    role: worker
   - task_id: TASK-053
     worktree: ../project-export-ui
-    window: 2
+    pane: "%9"
     started: "2026-05-27T14:35:00"
     model: sonnet
+    role: worker
 
 max_workers: 3
 
@@ -202,12 +205,19 @@ assigned_to: null        # orchestrator fills this
 model: sonnet
 linear_id: "LIN-51"
 worktree: null           # orchestrator fills this when starting
-window: null             # orchestrator fills this when starting
+pane: null               # orchestrator fills this when starting (tmux pane id, e.g. "%7")
 started: null
 pr_url: null
 pr_number: null
-qa_failure_count: 0      # orchestrator increments on each QA fail; escalates at 2, hard-stops at 3
-qa_out_of_scope_bugs: [] # list of BUG-NNN task IDs filed from out-of-scope QA findings
+expected_behavior:       # QA rubric (task-breakdown authors; observable, spec-derived)
+  - "given valid input, the export downloads as a CSV with one row per record"
+branch: null             # worker fills task/<id> at PR time; empty = fix-mode signal
+qa_instructions: null    # worker fills (path to its QA recipe)
+qa_report: null          # QA agent fills (path to its report; its status: is the verdict signal)
+failure_reason: null     # orchestrator fills on escalate/block
+qa_failure_count: 0      # verdict-ladder pass counter (one retry: 0 or 1)
+qa_run_attempts: 0       # orchestrator's infra-retry counter for dead QA runs (escalates at 2)
+qa_out_of_scope_bugs: [] # reserved + UNUSED (random-bugs subsystem is future)
 references:              # files the worker reads alongside the spec — wireframes, mockups, etc.
   - docs/11-misc/wireframes/export-modal.html
   - docs/11-misc/screenshots/export-design-v2.png

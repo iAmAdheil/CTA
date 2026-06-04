@@ -68,7 +68,7 @@ The harness engine. Build and test each piece before wiring them together.
 **Operations:**
 - `read_state()` → dict
 - `write_state(state)` → atomic write (write to tmp, rename — prevents corruption)
-- `add_worker(task_id, worktree, window, model)`
+- `add_worker(task_id, worktree, pane, model)`
 - `remove_worker(task_id)`
 - `get_runnable_tasks(all_tasks, done_tasks)` → tasks where all `depends_on` are done
 
@@ -81,12 +81,12 @@ The harness engine. Build and test each piece before wiring them together.
 **What:** Python module that abstracts all tmux operations.
 
 **Operations:**
-- `create_window(name)` → opens a new tmux window, returns window ID
-- `send_to_window(window_id, text)` → `tmux send-keys`
-- `kill_window(window_id)` → tears down a finished worker
+- `create_pane(name)` → splits a pane into the shared `agents` window (or creates that window for the first agent), returns the pane ID (e.g. `%7`)
+- `send_to_pane(pane_id, text)` → `tmux send-keys`
+- `kill_pane(pane_id)` → tears down a finished worker
 - `create_worktree(branch, path)` → `git worktree add`
 - `remove_worktree(path)` → `git worktree remove`
-- `read_window_last_lines(window_id, n)` → check if agent is idle
+- `read_pane_last_lines(pane_id, n)` → check if agent is idle
 
 **File:** `harness/tmux_manager.py` — ~100 lines.
 

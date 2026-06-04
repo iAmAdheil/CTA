@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent-Harness — Lifecycle & Progress Dashboard</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#ffffff; --panel-2:#fbfcfd; --text:#1b2330; --muted:#5b6675;
+    --border:#e2e6ec; --border-strong:#cdd4de; --accent:#3b6fe0; --accent-soft:#eaf0fd;
+    --green:#1f9d57; --green-soft:#e6f6ec; --yellow:#c98a08; --yellow-soft:#fdf3da;
+    --red:#d2463a; --red-soft:#fbe9e7; --gray:#7b8694; --gray-soft:#eef1f4;
+    --shadow:0 1px 2px rgba(20,30,50,.06),0 4px 16px rgba(20,30,50,.05);
+    --mono:'SF Mono',ui-monospace,'Cascadia Code',Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  }
+  [data-theme="dark"]{
+    --bg:#0e1117; --panel:#161b24; --panel-2:#1b212c; --text:#e4e9f1; --muted:#9aa6b6;
+    --border:#262d3a; --border-strong:#333c4c; --accent:#5b8bff; --accent-soft:#1a2236;
+    --green:#3ecf7e; --green-soft:#10271a; --yellow:#e0a93a; --yellow-soft:#2a2110;
+    --red:#f06a5d; --red-soft:#2c1513; --gray:#8a96a6; --gray-soft:#1d232e;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 22px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.55;font-size:15px}
+  a{color:var(--accent)}
+  code,.mono{font-family:var(--mono);font-size:.86em}
+
+  header.top{position:sticky;top:0;z-index:50;background:color-mix(in srgb,var(--panel) 88%,transparent);
+    backdrop-filter:saturate(160%) blur(10px);border-bottom:1px solid var(--border)}
+  .top-row{max-width:1280px;margin:0 auto;padding:14px 22px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+  .brand{font-weight:700;font-size:18px;letter-spacing:-.02em;display:flex;align-items:center;gap:10px}
+  .brand .dot{width:11px;height:11px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px var(--accent-soft)}
+  .brand small{font-weight:500;color:var(--muted);font-size:12px}
+  nav.tabs{display:flex;gap:4px;flex-wrap:wrap;margin-left:auto}
+  nav.tabs button{font:inherit;font-size:13.5px;font-weight:600;color:var(--muted);background:transparent;border:1px solid transparent;
+    padding:7px 13px;border-radius:9px;cursor:pointer;transition:all .2s ease}
+  nav.tabs button:hover{color:var(--text);background:var(--panel-2)}
+  nav.tabs button.active{color:var(--accent);background:var(--accent-soft);border-color:color-mix(in srgb,var(--accent) 30%,transparent)}
+  .theme-btn{font:inherit;font-size:18px;line-height:1;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:9px;width:38px;height:34px;cursor:pointer;color:var(--text);transition:all .2s ease}
+  .theme-btn:hover{border-color:var(--border-strong)}
+
+  main{max-width:1280px;margin:0 auto;padding:26px 22px 80px}
+  section.view{display:none;animation:fade .25s ease}
+  section.view.active{display:block}
+  @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+  h1.page{font-size:25px;letter-spacing:-.02em;margin:.1em 0 .15em}
+  .lede{color:var(--muted);max-width:78ch;margin:0 0 22px}
+  h2.sec{font-size:18px;letter-spacing:-.01em;margin:34px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--border);
+    display:flex;align-items:center;gap:10px}
+  h3.sub{font-size:15px;margin:22px 0 10px;color:var(--text)}
+
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:18px 20px;box-shadow:var(--shadow);margin-bottom:16px}
+  .grid{display:grid;gap:14px}
+  .g2{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+  .g3{grid-template-columns:repeat(auto-fit,minmax(230px,1fr))}
+
+  /* status badges */
+  .badge{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;letter-spacing:.01em;
+    padding:2.5px 9px;border-radius:999px;white-space:nowrap;vertical-align:middle}
+  .badge::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+  .b-built{color:var(--green);background:var(--green-soft)}
+  .b-designed{color:var(--yellow);background:var(--yellow-soft)}
+  .b-future{color:var(--gray);background:var(--gray-soft)}
+  .b-accent{color:var(--accent);background:var(--accent-soft)}
+
+  .legend{display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-size:13px;color:var(--muted)}
+  .legend .badge{font-size:11px}
+
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:6px 0}
+  th,td{text-align:left;padding:9px 11px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:700}
+  tbody tr:hover{background:var(--panel-2)}
+  td code{background:var(--panel-2);padding:1px 6px;border-radius:6px;border:1px solid var(--border)}
+
+  .callout{border-left:3px solid var(--accent);background:var(--accent-soft);padding:13px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+  .callout.warn{border-color:var(--yellow);background:var(--yellow-soft)}
+  .callout.ok{border-color:var(--green);background:var(--green-soft)}
+  .callout b{color:var(--text)}
+
+  /* cycle steps */
+  .step{display:flex;gap:14px;padding:14px 16px;border:1px solid var(--border);border-radius:12px;background:var(--panel);
+    margin-bottom:10px;cursor:pointer;transition:all .2s ease}
+  .step:hover{border-color:var(--border-strong);transform:translateX(3px)}
+  .step .num{flex:none;width:34px;height:34px;border-radius:9px;background:var(--accent-soft);color:var(--accent);
+    font-weight:800;display:flex;align-items:center;justify-content:center;font-size:15px}
+  .step .body{flex:1}
+  .step .body h4{margin:0 0 3px;font-size:14.5px;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  .step .body p{margin:0;color:var(--muted);font-size:13px}
+  .step .detail{display:none;margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);font-size:13px;color:var(--text)}
+  .step.open .detail{display:block}
+  .step .detail ul{margin:6px 0;padding-left:18px}
+  .step .detail li{margin:3px 0}
+
+  /* SVG diagram */
+  .diagram-wrap{display:grid;grid-template-columns:1.55fr 1fr;gap:16px;align-items:start}
+  @media(max-width:900px){.diagram-wrap{grid-template-columns:1fr}}
+  .svg-box{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:10px;box-shadow:var(--shadow);overflow:auto}
+  svg.flow{width:100%;height:auto;min-width:680px}
+  .node{cursor:pointer}
+  .node rect,.node polygon,.node ellipse{transition:filter .15s ease,stroke-width .15s ease}
+  .node:hover rect,.node:hover polygon,.node:hover ellipse{filter:brightness(1.04)}
+  .node.selected rect,.node.selected polygon,.node.selected ellipse{stroke-width:3.5px}
+  .node text{font-family:var(--sans);font-size:12.5px;font-weight:700;fill:#fff;pointer-events:none}
+  .node text.sm{font-size:10px;font-weight:600;opacity:.92}
+  .edge{stroke:var(--border-strong);stroke-width:2;fill:none}
+  .edge.retry{stroke:var(--yellow)}
+  .edge.bad{stroke:var(--red)}
+  .edge.good{stroke:var(--green)}
+  .elabel{font-family:var(--sans);font-size:10.5px;fill:var(--muted);font-weight:600}
+  .elabel-bg{fill:var(--bg);opacity:.85}
+
+  #detailPanel{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:18px 20px;box-shadow:var(--shadow);
+    position:sticky;top:84px}
+  #detailPanel .ph{color:var(--muted);font-style:italic}
+  #detailPanel h3{margin:0 0 4px;font-size:17px;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  #detailPanel .meta{font-size:12.5px;color:var(--muted);margin-bottom:12px}
+  #detailPanel dl{margin:0;font-size:13px}
+  #detailPanel dt{font-weight:700;color:var(--muted);text-transform:uppercase;font-size:10.5px;letter-spacing:.05em;margin-top:12px}
+  #detailPanel dd{margin:3px 0 0}
+  .chiprow{display:flex;gap:6px;flex-wrap:wrap;margin-top:5px}
+  .chip{font-size:11.5px;background:var(--panel-2);border:1px solid var(--border);border-radius:7px;padding:2px 8px;font-family:var(--mono)}
+
+  /* kanban */
+  .board{margin-bottom:22px}
+  .board-title{display:flex;align-items:center;gap:10px;font-weight:700;font-size:15px;margin-bottom:10px}
+  .cols{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}
+  .col{background:var(--panel-2);border:1px solid var(--border);border-radius:11px;padding:10px;min-height:90px}
+  .col h5{margin:0 0 8px;font-size:12px;letter-spacing:.02em;display:flex;align-items:center;justify-content:space-between;gap:6px}
+  .col h5 .st{font-family:var(--mono);font-size:9.5px;color:var(--muted);font-weight:600}
+  .col .ccard{background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:8px;
+    padding:7px 9px;font-size:12px;margin-bottom:7px;box-shadow:var(--shadow)}
+  .col .ccard small{color:var(--muted);display:block;font-size:10.5px}
+  .col.future{opacity:.62;border-style:dashed}
+
+  /* fields */
+  .fieldtag{font-family:var(--mono);font-size:12.5px;font-weight:600}
+  .owner{font-size:11px;font-weight:700;padding:1px 7px;border-radius:6px;background:var(--panel-2);border:1px solid var(--border);color:var(--muted)}
+
+  .pill-track{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:600;padding:4px 10px;border-radius:8px;border:1px solid var(--border);margin:3px 4px 3px 0}
+  .pill-track i{width:9px;height:9px;border-radius:2px;display:inline-block}
+
+  /* progress bars */
+  .metric{margin:11px 0}
+  .metric .ml{display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px}
+  .metric .bar{height:9px;border-radius:999px;background:var(--panel-2);border:1px solid var(--border);overflow:hidden}
+  .metric .bar span{display:block;height:100%;border-radius:999px}
+  .foot{color:var(--muted);font-size:12px;margin-top:30px;border-top:1px solid var(--border);padding-top:14px}
+  .kbd{font-family:var(--mono);font-size:11px;background:var(--panel-2);border:1px solid var(--border-strong);border-bottom-width:2px;border-radius:5px;padding:1px 6px}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="top-row">
+    <div class="brand"><span class="dot"></span> agent-harness
+      <small>lifecycle &amp; progress · issue&nbsp;#4 QA loop folded in</small></div>
+    <nav class="tabs" id="tabs">
+      <button data-v="cycle" class="active">Orchestrator Cycle</button>
+      <button data-v="lifecycle">Task Lifecycle</button>
+      <button data-v="kanban">Kanban Boards</button>
+      <button data-v="files">Files &amp; Fields</button>
+      <button data-v="agents">Agents</button>
+      <button data-v="progress">Build Progress</button>
+    </nav>
+    <button class="theme-btn" id="themeBtn" title="Toggle theme">🌙</button>
+  </div>
+</header>
+
+<main>
+  <div class="legend card" style="margin-bottom:22px;padding:13px 18px">
+    <div class="legend">
+      <strong style="color:var(--text)">Build status:</strong>
+      <span class="badge b-built">Built &amp; validated</span>
+      <span class="badge b-designed">Designed (locked, not coded)</span>
+      <span class="badge b-future">Deferred / future</span>
+      <span style="margin-left:auto;font-size:12px">Click cycle steps & diagram nodes for detail · <span class="kbd">←</span>/<span class="kbd">→</span> switch tabs</span>
+    </div>
+  </div>
+
+  <!-- ================= CYCLE ================= -->
+  <section class="view active" id="v-cycle">
+    <h1 class="page">The Orchestrator Cycle — one stateless tick</h1>
+    <p class="lede">The orchestrator is an LLM agent (the <code>/orchestrator</code> skill), not a <code>while True</code> loop.
+      An external driver (cron / <code>/loop</code> / file-watcher / you) invokes it; it reads file state, reacts to transitions, writes state, and exits.
+      Crashes are free — the next tick replays from disk. Click a step to expand.</p>
+
+    <div class="callout"><b>Source of truth is on disk.</b> <code>orchestrator-state.yaml</code> + the task YAML files under
+      <code>tasks/{backlog,in-progress,review,done}/</code>. The kanban boards are a <em>derived projection</em> — never load-bearing.</div>
+
+    <div id="steps"></div>
+  </section>
+
+  <!-- ================= LIFECYCLE ================= -->
+  <section class="view" id="v-lifecycle">
+    <h1 class="page">Task Lifecycle — every track a task can take</h1>
+    <p class="lede">A single task from <code>backlog</code> to <code>done</code> (or <code>blocked-escalated</code>).
+      The QA retry loop (issue&nbsp;#4) is the new machinery in yellow. Click any node for who writes it, what the orchestrator does, and where it can go next.</p>
+
+    <div style="margin-bottom:14px" class="legend">
+      <span class="pill-track"><i style="background:var(--green)"></i> happy path</span>
+      <span class="pill-track"><i style="background:var(--yellow)"></i> one-retry ladder</span>
+      <span class="pill-track"><i style="background:var(--red)"></i> escalate to human</span>
+    </div>
+
+    <div class="diagram-wrap">
+      <div class="svg-box">
+        <svg class="flow" viewBox="0 0 1000 760" id="flow" aria-label="task lifecycle state machine">
+          <defs>
+            <marker id="arr" markerWidth="11" markerHeight="11" refX="8.5" refY="4" orient="auto">
+              <path d="M0,0 L9,4 L0,8 z" fill="var(--border-strong)"/></marker>
+            <marker id="arrY" markerWidth="11" markerHeight="11" refX="8.5" refY="4" orient="auto">
+              <path d="M0,0 L9,4 L0,8 z" fill="var(--yellow)"/></marker>
+            <marker id="arrR" markerWidth="11" markerHeight="11" refX="8.5" refY="4" orient="auto">
+              <path d="M0,0 L9,4 L0,8 z" fill="var(--red)"/></marker>
+            <marker id="arrG" markerWidth="11" markerHeight="11" refX="8.5" refY="4" orient="auto">
+              <path d="M0,0 L9,4 L0,8 z" fill="var(--green)"/></marker>
+          </defs>
+          <!-- edges drawn first -->
+          <g id="edges"></g>
+          <!-- nodes injected by JS -->
+          <g id="nodes"></g>
+        </svg>
+      </div>
+      <div id="detailPanel">
+        <h3>Pick a state →</h3>
+        <p class="ph">Click any box in the diagram to see who sets it, the orchestrator's action, the board column it maps to, and its outgoing transitions.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= KANBAN ================= -->
+  <section class="view" id="v-kanban">
+    <h1 class="page">Kanban Boards — the human-glanceable projection</h1>
+    <p class="lede">Three persistent Obsidian boards in <code>docs/_kanban/</code>. The orchestrator <strong>moves one card at a time</strong> (idempotent "ensure card C in column COL") — it never regenerates a board, so your manual edits survive. Card moves are gated into worker teardown and anchored on <code>active_workers</code> for crash-safety.</p>
+
+    <div class="callout warn"><b>Board can drift from task <code>status:</code></b> — it's a second copy of state with no self-healing regeneration. Accepted tradeoff; the orchestrator minimizes drift by moving cards inside the transitions it already processes, and the reconcile step re-asserts the column for in-flight work.</div>
+
+    <div id="boards"></div>
+  </section>
+
+  <!-- ================= FILES ================= -->
+  <section class="view" id="v-files">
+    <h1 class="page">Files &amp; Fields — the control plane</h1>
+    <p class="lede">Everything dynamic lives in files. Task files are control-plane state (gitignored, in the main worktree, read by absolute path per ADR-001). Field ownership is <strong>disjoint</strong> so writers never race.</p>
+
+    <h2 class="sec">Task file — <code>tasks/&lt;dir&gt;/&lt;TASK-ID&gt;.yaml</code></h2>
+    <div class="card" style="padding:6px 4px"><div id="schemaTable"></div></div>
+
+    <h2 class="sec"><code>orchestrator-state.yaml</code> — the durable "who's alive" list</h2>
+    <div class="card" style="padding:6px 4px"><div id="stateTable"></div></div>
+
+    <h2 class="sec">Per-feature artifacts — <code>docs/active-features/&lt;feature&gt;/</code></h2>
+    <div class="card" style="padding:6px 4px"><div id="artifactTable"></div></div>
+
+    <h2 class="sec">Spec frontmatter — <code>docs/specs/*.md</code></h2>
+    <div class="card" style="padding:6px 4px"><div id="specTable"></div></div>
+  </section>
+
+  <!-- ================= AGENTS ================= -->
+  <section class="view" id="v-agents">
+    <h1 class="page">Agents — who does what</h1>
+    <p class="lede">The orchestrator is the only sequencer. Every other agent is spawned by it: synchronous <code>claude --print</code> for fast deciders, async tracked tmux sessions for slow doers.</p>
+    <div class="grid g2" id="agentCards"></div>
+  </section>
+
+  <!-- ================= PROGRESS ================= -->
+  <section class="view" id="v-progress">
+    <h1 class="page">Build Progress</h1>
+    <p class="lede">Where the harness actually stands. The spec→tasks→workers→PR loop is built and validated across three e2e runs. The QA retry loop (issue&nbsp;#4) is fully designed and its docs are reconciled; code is the next step.</p>
+
+    <div class="grid g3" id="progressMetrics"></div>
+
+    <h2 class="sec">✅ Built &amp; validated <span class="badge b-built">shipped</span></h2>
+    <div class="card"><ul id="builtList" style="margin:0;padding-left:18px;columns:2;column-gap:34px"></ul></div>
+
+    <h2 class="sec">🟡 Designed — issue #4 QA loop <span class="badge b-designed">next up</span></h2>
+    <div class="card"><ol id="designedList" style="margin:0;padding-left:20px"></ol></div>
+
+    <h2 class="sec">⚪ Deferred / future <span class="badge b-future">later</span></h2>
+    <div class="card"><ul id="futureList" style="margin:0;padding-left:18px;columns:2;column-gap:34px"></ul></div>
+
+    <div class="callout ok" style="margin-top:22px"><b>Latest:</b> docs reconciled to the QA-loop design and committed (<code>0c12ee9</code> on <code>master</code>) — <code>feature-lifecycle.md</code>, <code>orchestrator-design.md</code>, <code>build-roadmap.md</code> Stage 6, <code>qa-report.md</code> template. <b>Next build step:</b> apply the schema delta to <code>schemas/task.schema.yaml</code>, then build order A → B → C.</div>
+  </section>
+
+  <div class="foot">agent-harness · generated lifecycle dashboard · self-contained, offline-friendly · this file is the living progress tracker — update the JS data blocks as things ship.</div>
+</main>
+
+<script>
+/* ---------- theme ---------- */
+const themeBtn=document.getElementById('themeBtn'),root=document.documentElement;
+function setTheme(t){root.setAttribute('data-theme',t);themeBtn.textContent=t==='dark'?'☀️':'🌙';try{localStorage.setItem('ah-theme',t)}catch(e){}}
+setTheme((()=>{try{return localStorage.getItem('ah-theme')||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light')}catch(e){return'light'}})());
+themeBtn.onclick=()=>setTheme(root.getAttribute('data-theme')==='dark'?'light':'dark');
+
+/* ---------- tabs ---------- */
+const views=['cycle','lifecycle','kanban','files','agents','progress'];
+const tabBtns=[...document.querySelectorAll('#tabs button')];
+function show(v){
+  views.forEach(x=>document.getElementById('v-'+x).classList.toggle('active',x===v));
+  tabBtns.forEach(b=>b.classList.toggle('active',b.dataset.v===v));
+  history.replaceState(null,'','#'+v);
+}
+tabBtns.forEach(b=>b.onclick=()=>show(b.dataset.v));
+document.addEventListener('keydown',e=>{
+  if(e.target.matches('input,textarea'))return;
+  const cur=views.indexOf(tabBtns.find(b=>b.classList.contains('active')).dataset.v);
+  if(e.key==='ArrowRight')show(views[(cur+1)%views.length]);
+  if(e.key==='ArrowLeft')show(views[(cur-1+views.length)%views.length]);
+});
+if(location.hash&&views.includes(location.hash.slice(1)))show(location.hash.slice(1));
+const B=(c,t)=>`<span class="badge b-${c}">${t}</span>`;
+
+/* ====================================================== CYCLE ====================================================== */
+const steps=[
+ {n:1,t:"Read state",s:"built",d:"<code>state_manager read</code> → JSON. Note <code>active_workers</code> (task_id / worktree / window / started / model) and <code>max_workers</code>. Inits the state file if missing.",x:["Stateless: no memory across ticks — the truth is the file.","<code>active_workers</code> is the durable 'who's alive' list that survives crashes."]},
+ {n:2,t:"Next approved spec → breakdown",s:"built",d:"Syncs the specs board, then the serial gate <code>state_manager next-spec</code> returns at most one spec — and only when the current spec has drained.",x:["<b>2a Advisor (Opus)</b> — <code>run-advisor.sh</code> gates on an architectural decision: PROCEED, decide+PROCEED (writes <code>status:proposed</code> ADR), or BLOCK (writes <code>status:blocked</code> into the spec).","<b>2b Breakdown (Sonnet)</b> — only on PROCEED. <code>run-breakdown.sh</code> writes schema-valid task YAMLs to <code>tasks/backlog/</code>. Flip spec → <code>in-breakdown</code> (one-way latch)."]},
+ {n:3,t:"Runnable backlog → spawn workers",s:"built",d:"Free slots = <code>max_workers − len(active_workers)</code>. <code>state_manager runnable</code> lists deps-satisfied backlog tasks, already priority-ordered. Take the first N.",x:["<b>Race-free spawn:</b> <code>provision-worker</code> (worktree + idle window, no claude) → do ALL bookkeeping → <code>launch-worker</code> (start claude).","Disjoint ownership: worker owns <code>status</code>/<code>pr_url</code>/<code>pr_number</code> (and now <code>branch</code>/<code>qa_instructions</code>); orchestrator owns placement + <code>worktree</code>/<code>window</code>/<code>started</code>/<code>assigned_to</code>."]},
+ {n:4,t:"pr-opened → tear down worker, move to review",s:"built",d:"For each <code>active_workers</code> entry whose task is now <code>pr-opened</code>: <b>(1)</b> ensure card → In Review, <b>(2)</b> kill window, <b>(3)</b> remove worktree, <b>(4)</b> mv task → <code>review/</code>, <b>(5)</b> remove-worker LAST.",x:["Order is crash-safe: card moves BEFORE the kill; removal-from-state is LAST, so a torn-down worker whose card never moved is unreachable.","The <code>task/&lt;id&gt;</code> branch + open PR survive — only the local checkout is removed.","<span class='badge b-designed'>QA loop adds:</span> at <code>pr-opened</code>/<code>pr-updated</code>, spawn the async QA agent (own worktree on the branch)."]},
+ {n:5,t:"done → archive",s:"built",d:"Every <code>review/*.yaml</code> with <code>status: done</code>: ensure card → Done, mv task → <code>tasks/done/</code>.",x:["<span class='badge b-future'>Future:</span> <code>done</code> will be SET by a separate merge/archival agent that detects the human's manual merge — the orchestrator just archives what's already <code>done</code>."]},
+ {n:6,t:"blocked → move card, leave alone",s:"built",d:"Every <code>in-progress/*.yaml</code> with <code>status: blocked</code>: ensure card → Blocked, then do nothing (don't race the resolver).",x:["<span class='badge b-future'>Future:</span> the blocker-resolver skill (Opus) routes these; the orchestrator only moves the card today."]},
+ {n:7,t:"Reconcile state vs reality",s:"built",d:"For each <code>active_workers</code> entry: task file still exists? window still alive? Board column matches <code>status:</code>? Self-heals drift; never revives a dead worker.",x:["This is where board drift for in-flight work self-corrects (idempotent ensure-in-column)."]},
+ {n:8,t:"Summary, then exit",s:"built",d:"Print one line per action taken (spawns, teardowns, archives, card moves, reconciliations) and exit. <b>Never loops.</b>",x:["Cadence is the external driver's job — cron, <code>/loop</code>, file-watcher, or you typing <code>/orchestrator</code>."]},
+];
+document.getElementById('steps').innerHTML=steps.map(s=>`
+ <div class="step" data-n="${s.n}">
+   <div class="num">${s.n}</div>
+   <div class="body">
+     <h4>${s.t} ${B(s.s,s.s==='built'?'built':s.s)}</h4>
+     <p>${s.d}</p>
+     <div class="detail"><ul>${s.x.map(i=>`<li>${i}</li>`).join('')}</ul></div>
+   </div>
+ </div>`).join('');
+document.querySelectorAll('.step').forEach(el=>el.onclick=()=>el.classList.toggle('open'));
+
+/* ====================================================== LIFECYCLE STATE MACHINE ====================================================== */
+// node: id, label, sublabel, x, y, shape(rect|term|diamond), color, status, detail{who,orch,col,next[]}
+const C={blue:'#3b6fe0',green:'#1f9d57',yellow:'#c98a08',red:'#d2463a',gray:'#7b8694',teal:'#1f8aa0'};
+const NW=150,NH=46;
+const nodes=[
+ {id:'backlog',l:'backlog',x:150,y:60,c:C.gray,s:'built',
+   who:'task-breakdown (creates the file)',orch:'Counts it as "spec not drained" — holds the next spec. Spawns a worker when deps are satisfied + a slot is free.',col:'Tasks → Backlog',next:['in-progress']},
+ {id:'in-progress',l:'in-progress',x:150,y:170,c:C.blue,s:'built',
+   who:'orchestrator (on spawn)',orch:'Provisioned a worktree + window and launched a worker. Owns worktree/window/started/assigned_to.',col:'Tasks → In Progress',next:['pr-opened','blocked']},
+ {id:'blocked',l:'blocked',x:430,y:170,c:C.gray,s:'built',sub:'worker hit a gap',
+   who:'worker (writes BLOCKER)',orch:'Ensures card → Blocked, then leaves it for the (future) blocker-resolver. Does not tear down.',col:'Tasks → Blocked',next:[]},
+ {id:'pr-opened',l:'pr-opened',x:150,y:290,c:C.blue,s:'built',sub:'PR open, QA pending',
+   who:'worker (fills branch, writes recipe, opens PR)',orch:'Tears down the worker window+worktree, moves task → review/, then spawns the async QA agent on its own worktree.',col:'Tasks → In Review',next:['QA1']},
+ {id:'QA1',l:'QA agent',x:150,y:400,c:C.teal,s:'designed',shape:'diamond',sub:'1st pass · async',
+   who:'QA agent (writes review-file status)',orch:'Polls the qa-report status WIP→verdict on a later tick, then routes. Tracked in active_workers with role: qa.',col:'(running — task stays In Review)',next:['qa-passed','qa-failed','blocked-escalated']},
+ {id:'qa-failed',l:'qa-failed',x:430,y:400,c:C.yellow,s:'designed',sub:'needs-changes',
+   who:'orchestrator (on needs-changes verdict)',orch:'Spawns the Opus fixer on the SAME task. Reached by a bug (always) or a trivial rubric mismatch.',col:'Tasks → QA Failed',next:['pr-updated']},
+ {id:'pr-updated',l:'pr-updated',x:430,y:290,c:C.yellow,s:'designed',sub:'fixer pushed',
+   who:'Opus fixer (worker fix-mode)',orch:'Re-triggers QA (2nd pass). Fixer pushed to the EXISTING branch — no second PR.',col:'Tasks → In Review',next:['QA2']},
+ {id:'QA2',l:'re-QA',x:710,y:290,c:C.teal,s:'designed',shape:'diamond',sub:'2nd pass · terminal',
+   who:'QA agent (2nd run)',orch:'Terminal pass: looks-good → qa-passed; anything else → escalate. No further retries.',col:'(running — task stays In Review)',next:['qa-passed','blocked-escalated']},
+ {id:'qa-passed',l:'qa-passed',x:150,y:560,c:C.green,s:'designed',sub:'awaiting your merge',
+   who:'orchestrator (on looks-good)',orch:'Card → Human Review. PR awaits your MANUAL merge. The advance gate now releases the next spec.',col:'Tasks → Human Review',next:['done']},
+ {id:'blocked-escalated',l:'blocked-escalated',x:620,y:560,c:C.red,s:'designed',sub:'needs you',
+   who:'orchestrator (on escalate / QA run died ×N)',orch:'Writes failure_reason into the task file, card → Human Review. Fundamental mismatch, ambiguity, or QA infra failure after N=2 retries.',col:'Tasks → Human Review',next:[]},
+ {id:'done',l:'done',x:150,y:680,c:C.green,s:'built',shape:'term',sub:'merged',
+   who:'separate merge/archival agent (future)',orch:'Detects your merge (gh pr view), sets done; orchestrator step 5 archives → tasks/done/.',col:'Tasks → Done',next:[]},
+];
+// edges: from,to,kind(norm|good|retry|bad),label,via(optional polyline points)
+const edges=[
+ {f:'backlog',t:'in-progress',k:'norm',lab:'orch spawns worker'},
+ {f:'in-progress',t:'pr-opened',k:'norm',lab:'worker opens PR'},
+ {f:'in-progress',t:'blocked',k:'bad',lab:'BLOCKER'},
+ {f:'pr-opened',t:'QA1',k:'norm',lab:'spawn async QA'},
+ {f:'QA1',t:'qa-passed',k:'good',lab:'looks-good'},
+ {f:'QA1',t:'qa-failed',k:'retry',lab:'needs-changes (bug / trivial)'},
+ {f:'QA1',t:'blocked-escalated',k:'bad',lab:'escalate / run died ×N'},
+ {f:'qa-failed',t:'pr-updated',k:'retry',lab:'Opus fixer → same branch'},
+ {f:'pr-updated',t:'QA2',k:'retry',lab:'re-QA'},
+ {f:'QA2',t:'qa-passed',k:'good',lab:'looks-good',via:[[710,335],[710,640],[150,640]]},
+ {f:'QA2',t:'blocked-escalated',k:'bad',lab:'anything else'},
+ {f:'qa-passed',t:'done',k:'good',lab:'human merges'},
+];
+const nmap=Object.fromEntries(nodes.map(n=>[n.id,n]));
+function anchor(n,side){const w=n.shape==='diamond'?NW+10:NW,h=NH;
+  if(side==='b')return[n.x,n.y+h/2]; if(side==='t')return[n.x,n.y-h/2];
+  if(side==='l')return[n.x-w/2,n.y]; if(side==='r')return[n.x+w/2,n.y]; return[n.x,n.y];}
+function edgePath(e){
+  const a=nmap[e.f],b=nmap[e.t];
+  if(e.via){const pts=[[a.x,a.y+NH/2],...e.via,[b.x,b.y-NH/2]];return 'M'+pts.map(p=>p.join(',')).join(' L');}
+  // choose sides
+  let p1,p2;
+  if(a.x===b.x){p1=anchor(a,'b');p2=anchor(b,'t');}
+  else if(Math.abs(a.y-b.y)<8){p1=anchor(a, b.x>a.x?'r':'l');p2=anchor(b, b.x>a.x?'l':'r');}
+  else { // diagonal: leave from bottom/side toward target
+    if(b.y>a.y){p1=anchor(a, b.x>a.x?'r':'l');p2=anchor(b,'t');}
+    else {p1=anchor(a,'t');p2=anchor(b,'b');}
+  }
+  const mx=(p1[0]+p2[0])/2;
+  return `M${p1[0]},${p1[1]} C${mx},${p1[1]} ${mx},${p2[1]} ${p2[0]},${p2[1]}`;
+}
+function edgeMid(e){const a=nmap[e.f],b=nmap[e.t];
+  if(e.via){const m=e.via[Math.floor(e.via.length/2)]||[(a.x+b.x)/2,(a.y+b.y)/2];return m;}
+  return [(a.x+b.x)/2,(a.y+b.y)/2];}
+const mk={norm:'arr',good:'arrG',retry:'arrY',bad:'arrR'};
+document.getElementById('edges').innerHTML=edges.map(e=>{
+  const cls=e.k==='retry'?'retry':e.k==='bad'?'bad':e.k==='good'?'good':'';
+  const [mx,my]=edgeMid(e);
+  const w=e.lab.length*5.6+10;
+  return `<path class="edge ${cls}" d="${edgePath(e)}" marker-end="url(#${mk[e.k]})"/>
+   <rect class="elabel-bg" x="${mx-w/2}" y="${my-9}" width="${w}" height="15" rx="4"/>
+   <text class="elabel" x="${mx}" y="${my+2}" text-anchor="middle">${e.lab}</text>`;
+}).join('');
+function nodeSVG(n){
+  const w=NW,h=NH,x=n.x-w/2,y=n.y-h/2;
+  let shape;
+  if(n.shape==='diamond'){const dw=w/2+12;shape=`<polygon points="${n.x},${n.y-h/2-4} ${n.x+dw},${n.y} ${n.x},${n.y+h/2+4} ${n.x-dw},${n.y}" fill="${n.c}" stroke="${n.c}" rx="6"/>`;}
+  else if(n.shape==='term'){shape=`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="22" fill="${n.c}" stroke="${n.c}"/>`;}
+  else shape=`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="11" fill="${n.c}" stroke="${n.c}"/>`;
+  const sub=n.sub?`<text class="sm" x="${n.x}" y="${n.y+13}" text-anchor="middle">${n.sub}</text>`:'';
+  const dy=n.sub?-3:5;
+  const ring=n.s==='designed'?`stroke-dasharray="5 3"`:'';
+  return `<g class="node" data-id="${n.id}" transform="translate(0,0)">
+    ${shape.replace('/>',` ${ring}/>`)}
+    <text x="${n.x}" y="${n.y+dy}" text-anchor="middle">${n.l}</text>${sub}</g>`;
+}
+document.getElementById('nodes').innerHTML=nodes.map(nodeSVG).join('');
+const dp=document.getElementById('detailPanel');
+function selNode(id){
+  document.querySelectorAll('.node').forEach(g=>g.classList.toggle('selected',g.dataset.id===id));
+  const n=nmap[id];
+  const nextHtml=n.next.length?n.next.map(t=>`<span class="chip">${nmap[t]?nmap[t].l:t}</span>`).join(''):'<span class="ph">terminal — handed to you</span>';
+  dp.innerHTML=`<h3><code>${n.l}</code> ${B(n.s, n.s==='built'?'built':n.s)}</h3>
+    <div class="meta">${n.shape==='diamond'?'async agent (decision point)':'task status'}</div>
+    <dl>
+      <dt>Written by</dt><dd>${n.who}</dd>
+      <dt>Orchestrator action</dt><dd>${n.orch}</dd>
+      <dt>Kanban column</dt><dd>${n.col}</dd>
+      <dt>Goes to</dt><dd><div class="chiprow">${nextHtml}</div></dd>
+    </dl>`;
+}
+document.querySelectorAll('.node').forEach(g=>g.addEventListener('click',()=>selNode(g.dataset.id)));
+
+/* ====================================================== KANBAN ====================================================== */
+const boards=[
+ {name:'Specs board',status:'built',file:'docs/_kanban/specs-board.md',
+  cols:[{h:'Under Review',st:'draft',cards:[['feature-export','draft spec, your edits']]},
+        {h:'Approved',st:'approved',cards:[['feature-auth','awaiting advisor + breakdown']]},
+        {h:'Acknowledged',st:'in-breakdown',cards:[['feature-export','tasks created']]},
+        {h:'Blocked',st:'blocked',cards:[['feature-billing','advisor: needs your call']]}]},
+ {name:'Tasks board',status:'built',file:'docs/_kanban/tasks-board.md',note:'QA-loop columns (QA Failed / Human Review) stay empty until issue #4 ships',
+  cols:[{h:'Backlog',st:'backlog',cards:[['TASK-052','deps not yet done']]},
+        {h:'In Progress',st:'in-progress',cards:[['TASK-051','worker on window:2']]},
+        {h:'In Review',st:'pr-opened · pr-updated',cards:[['TASK-049','QA running']]},
+        {h:'QA Failed',st:'qa-failed',designed:true,cards:[['TASK-048','Opus fixer running']]},
+        {h:'Human Review',st:'qa-passed · blocked-escalated',designed:true,cards:[['TASK-047','looks-good → merge'],['TASK-046','escalated: see failure_reason']]},
+        {h:'Blocked',st:'blocked',cards:[['TASK-050','worker BLOCKER']]},
+        {h:'Done',st:'done',cards:[['TASK-045','merged + archived']]}]},
+ {name:'Bugs board',status:'future',file:'docs/_kanban/bugs.md',note:'skeleton seeded; the random-bugs subsystem (separate fleet, Linear issues w/ recordings, you curate) is future work',
+  cols:[{h:'Reported',st:'—'},{h:'Triaged',st:'—'},{h:'In Progress',st:'—'},{h:'QA',st:'—'},{h:'Human Review',st:'—'},{h:'Blocked',st:'—'},{h:'Fixed',st:'—'}]},
+];
+document.getElementById('boards').innerHTML=boards.map(b=>`
+ <div class="board">
+   <div class="board-title">${b.name} ${B(b.status,b.status==='built'?'built':b.status)} <code style="font-weight:400;font-size:12px">${b.file}</code></div>
+   ${b.note?`<div style="font-size:12.5px;color:var(--muted);margin:-4px 0 9px">${b.note}</div>`:''}
+   <div class="cols">${b.cols.map(c=>`
+     <div class="col ${(c.designed||b.status==='future')?'future':''}">
+       <h5>${c.h} ${c.designed?B('designed',''):''}<span class="st">${c.st||''}</span></h5>
+       ${(c.cards||[]).map(cd=>`<div class="ccard">${cd[0]}<small>${cd[1]}</small></div>`).join('')}
+     </div>`).join('')}</div>
+ </div>`).join('');
+
+/* ====================================================== FILES & FIELDS ====================================================== */
+function tbl(el,head,rows){document.getElementById(el).innerHTML=
+ `<table><thead><tr>${head.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`;}
+const ownW='<span class="owner">worker</span>',ownO='<span class="owner">orchestrator</span>',ownT='<span class="owner">task-breakdown</span>',ownQ='<span class="owner">QA agent</span>';
+tbl('schemaTable',['Field','Owner','Status','Purpose'],[
+ ['<span class="fieldtag">id</span>',ownT,B('built','built'),'<code>TASK-NNN</code> / <code>BUG-NNN</code> (BUG reserved for the future random-bugs subsystem)'],
+ ['<span class="fieldtag">title · spec · priority</span>',ownT,B('built','built'),'task identity; <code>spec</code> points at the source spec; priority drives the runnable ordering'],
+ ['<span class="fieldtag">status</span>',ownW+' / '+ownO,B('built','built'),'the state-machine value — see Task Lifecycle'],
+ ['<span class="fieldtag">depends_on · blocks · can_parallelize_with</span>',ownT,B('built','built'),'the dependency graph; parallel only when no shared files'],
+ ['<span class="fieldtag">model</span>',ownT,B('built','built'),'<code>sonnet</code> for workers; the fixer pass runs <code>opus</code>'],
+ ['<span class="fieldtag">worktree · window · started · assigned_to</span>',ownO,B('built','built'),'spawn metadata, written between provision and launch'],
+ ['<span class="fieldtag">pr_url · pr_number</span>',ownW,B('built','built'),'set when the PR opens'],
+ ['<span class="fieldtag">qa_failure_count</span>',ownO,B('designed','repurpose'),'old "escalate@2/stop@3" is dead — ladder is one retry; becomes a 0/1 pass marker'],
+ ['<span class="fieldtag">qa_out_of_scope_bugs</span>',ownO,B('future','unused'),'reserved; random-bugs subsystem is deferred'],
+ ['<span class="fieldtag">suggested_files_to_read · references</span>',ownT,B('built','built'),'reading hints for the worker'],
+ ['<span class="fieldtag">expected_behavior</span>',ownT,B('designed','new'),'the RUBRIC — observable, spec-derived acceptance; the grading truth (in-file)'],
+ ['<span class="fieldtag">branch</span>',ownW,B('designed','new'),'empty at creation; worker fills <code>task/&lt;id&gt;</code>. Empty-vs-filled = fix-mode signal'],
+ ['<span class="fieldtag">qa_instructions</span>',ownW,B('designed','new'),'→ pointer to the worker-authored recipe artifact'],
+ ['<span class="fieldtag">qa_report</span>',ownQ,B('designed','new'),'→ pointer to the QA report artifact'],
+ ['<span class="fieldtag">failure_reason</span>',ownO,B('designed','new'),'why a task escalated/blocked — written so you see it in-file'],
+ ['<span class="fieldtag">qa_run_attempts</span>',ownO,B('designed','new'),'infra-retry counter for a dead QA run (N=2), distinct from the verdict ladder'],
+]);
+tbl('stateTable',['Field','Status','What it holds'],[
+ ['<span class="fieldtag">active_workers[]</span>',B('built','built'),'durable who-is-alive list: <code>task_id · worktree · window · started · model</code>'],
+ ['<span class="fieldtag">active_workers[].role</span>',B('designed','new'),'<code>qa</code> for the QA agent — marks an unconsumed verdict the orch still owes action on'],
+ ['<span class="fieldtag">max_workers</span>',B('built','built'),'concurrency cap (default 3); 0 pauses all new work'],
+ ['<span class="fieldtag">cycle_count · last_action · last_action_time</span>',B('built','built'),'bookkeeping the orchestrator edits directly'],
+]);
+tbl('artifactTable',['Artifact','Author','Status','Role'],[
+ ['<code>progress.md</code>',ownW,B('built','built'),'worker narration + BLOCKER section the orch watches'],
+ ['<code>decisions.md</code>','advisor / resolver',B('built','built'),'recorded architectural calls'],
+ ['<code>qa-instructions-&lt;TASK-ID&gt;.md</code>',ownW,B('designed','new'),'the RECIPE — how to drive THIS feature (routes/payloads, clicks) + claimed I/O. A map, never the rubric'],
+ ['<code>qa-report-&lt;TASK-ID&gt;.md</code>',ownQ,B('designed','new'),'verdict + findings; its <code>status:</code> (WIP→looks-good/needs-changes/escalate) is the durable signal the orch polls'],
+]);
+tbl('specTable',['Value','Status','Meaning'],[
+ ['<code>status: draft</code>',B('built','built'),'you are still writing it — Under Review'],
+ ['<code>status: approved</code>',B('built','built'),'the only manual gate; enters the next-spec pool — Approved'],
+ ['<code>status: in-breakdown</code>',B('built','built'),'one-way latch after breakdown runs — Acknowledged'],
+ ['<code>status: blocked</code>',B('built','built'),'advisor found a significant gap; out of the pool until you resolve — Blocked'],
+ ['<code>status: proposed</code> (on an ADR)',B('built','built'),'advisor auto-decided a low-risk call; you ratify at PR review'],
+]);
+
+/* ====================================================== AGENTS ====================================================== */
+const agents=[
+ {n:'Orchestrator',m:'—',mode:'the loop',s:'built',trig:'external driver (cron/loop/you)',in:'state + task files',out:'spawns, card moves, state writes',note:'The only sequencer. One tick, no internal loop.'},
+ {n:'Advisor',m:'Opus',mode:'sync · claude --print',s:'built',trig:'orch step 2a, per approved spec',in:'spec + ADRs + CLAUDE.md',out:'PROCEED / proposed-ADR / BLOCK',note:'Architectural gate before breakdown.'},
+ {n:'Task-breakdown',m:'Sonnet',mode:'sync · claude --print',s:'built',trig:'orch step 2b on PROCEED',in:'spec ACs + ADRs',out:'task YAMLs (+ expected_behavior rubric, designed)',note:'Authors the rubric — neither implements nor tests, so the grading is unbiased.'},
+ {n:'Worker',m:'Sonnet',mode:'async · tracked tmux',s:'built',trig:'orch step 3, fresh task',in:'task file → spec/CLAUDE.md/code',out:'PR + status pr-opened',note:'Will also fill branch + write the QA recipe (designed).'},
+ {n:'Opus fixer (worker fix-mode)',m:'Opus',mode:'async · tracked tmux',s:'designed',trig:'orch on needs-changes',in:'task + qa-report findings',out:'push to existing branch → pr-updated',note:'Detects fix-mode from state (filled branch + qa-failed); no second PR.'},
+ {n:'QA agent',m:'Sonnet',mode:'async · tracked tmux (role: qa)',s:'designed',trig:'orch at pr-opened / pr-updated',in:'rubric + recipe + project run-skill + own worktree',out:'qa-report status: looks-good / needs-changes / escalate',note:'BEHAVIORAL — runs the feature, never reviews the diff. Two checks anchored to the rubric.'},
+ {n:'Review agent',m:'—',mode:'async',s:'future',trig:'pr-opened (parallel)',in:'diff vs spec',out:'PR comments via gh pr review',note:'Build order D — adjacent, NOT part of the retry ladder.'},
+ {n:'Blocker-resolver',m:'Opus',mode:'sync',s:'future',trig:'orch step 6 on blocked',in:'BLOCKER + spec + ADRs',out:'decision → decisions.md, nudge worker',note:'Stage 7.'},
+ {n:'Merge / archival agent',m:'—',mode:'separate',s:'future',trig:'qa-passed task',in:'gh pr view --json state,mergedAt',out:'sets done → archive + doc-closeout',note:'Detects your manual merge; orch does NOT do this inline.'},
+ {n:'Random-bugs fleet',m:'—',mode:'separate fleet',s:'future',trig:'you curate the bugs board',in:'Linear issues w/ screenshots/recordings',out:'fixes off the main loop',note:'Out-of-scope bugs QA notices are IGNORED by the retry loop; this fleet owns them later.'},
+];
+document.getElementById('agentCards').innerHTML=agents.map(a=>`
+ <div class="card" style="border-left:3px solid ${a.s==='built'?'var(--green)':a.s==='designed'?'var(--yellow)':'var(--gray)'}">
+   <h3 class="sub" style="margin:0 0 6px;display:flex;align-items:center;gap:9px;flex-wrap:wrap">${a.n} ${B(a.s,a.s==='built'?'built':a.s)} ${a.m!=='—'?`<span class="chip">${a.m}</span>`:''}</h3>
+   <div style="font-size:12.5px;color:var(--muted);margin-bottom:9px">${a.note}</div>
+   <dl style="margin:0;font-size:12.5px;display:grid;grid-template-columns:auto 1fr;gap:3px 12px">
+     <b style="color:var(--muted)">mode</b><span>${a.mode}</span>
+     <b style="color:var(--muted)">trigger</b><span>${a.trig}</span>
+     <b style="color:var(--muted)">inputs</b><span>${a.in}</span>
+     <b style="color:var(--muted)">outputs</b><span>${a.out}</span>
+   </dl>
+ </div>`).join('');
+
+/* ====================================================== PROGRESS ====================================================== */
+const metrics=[
+ {l:'Core loop (spec→PR)',pct:100,c:'var(--green)',sub:'built + 3 e2e runs'},
+ {l:'QA retry loop (#4)',pct:18,c:'var(--yellow)',sub:'design ✓ + docs ✓ · code next'},
+ {l:'Ops & notifications',pct:5,c:'var(--gray)',sub:'mostly future'},
+];
+document.getElementById('progressMetrics').innerHTML=metrics.map(m=>`
+ <div class="card metric" style="margin:0">
+   <div class="ml"><b>${m.l}</b><span>${m.pct}%</span></div>
+   <div class="bar"><span style="width:${m.pct}%;background:${m.c}"></span></div>
+   <div style="font-size:12px;color:var(--muted);margin-top:6px">${m.sub}</div>
+ </div>`).join('');
+const built=['/orchestrator skill (8-step cycle)','/advisor skill (Opus ADR gate)','/task-breakdown skill (Sonnet)','/worker skill (real impl + hybrid PR)','state_manager (read/runnable/next-spec/workers)','tmux_manager (provision/launch split)','run-advisor.sh · run-breakdown.sh','serial-per-spec gate','advisor ADR gate (proposed ADRs)','persistent kanban: specs + tasks boards','race-free spawn (provision→bookkeep→launch)','crash-safe teardown ordering','ADR-001 control-plane files · ADR-002 conda env','3 end-to-end validation runs','QA-loop design docs reconciled + committed'];
+const designed=['Apply schema delta to task.schema.yaml (expected_behavior, branch, qa_instructions, qa_report, failure_reason, qa_run_attempts, qa-passed status)','A — /qa-agent skill + run-qa.sh + tmux existing-branch worktree','B — orch triggers async QA at pr-opened/pr-updated + advance-gate update (hold next spec through the loop)','C — verdict routing (looks-good/needs-changes/escalate) + one-retry ladder + crash-safe QA teardown','/worker fix-mode (push to existing branch → pr-updated, no 2nd PR)','N=2 infra-retry on a dead QA run → escalate with failure_reason'];
+const future=['/review-agent (build order D)','merge/archival agent (detect merge → done)','random-bugs subsystem (separate board + Linear + 2nd fleet)','Telegram + Linear notifications (Stage 5)','blocker-resolver (Stage 7)','doc-closeout (Stage 7)','backlog-triage (Opus, scheduled)','monitor.py dashboard (Stage 8)','file-watcher driver','remote control (Termius/Telegram cmds)'];
+document.getElementById('builtList').innerHTML=built.map(x=>`<li>${x}</li>`).join('');
+document.getElementById('designedList').innerHTML=designed.map(x=>`<li>${x}</li>`).join('');
+document.getElementById('futureList').innerHTML=future.map(x=>`<li>${x}</li>`).join('');
+</script>
+</body>
+</html>

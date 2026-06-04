@@ -92,11 +92,11 @@ For each runnable task (up to `max_workers`):
 
 ```
 git worktree add ../project-export-core feature/LIN-51-export-core
-→ opens tmux window:N
+→ opens a pane in the shared `agents` window (pane id e.g. %7)
 → starts Claude Code session in that worktree
 → hands it: task file + spec + CLAUDE.md + relevant ADRs
 → Linear: issue → "In Progress"
-→ Telegram: "🔧 LIN-51 started on window:1"
+→ Telegram: "🔧 LIN-51 started on pane %7"
 ```
 
 Workers write to `04-active-features/{feature}/progress.md` continuously. You can check this anytime from your phone.
@@ -144,7 +144,7 @@ Worker opens PR via `gh pr create` with description generated from the spec's ac
 Orchestrator detects the status change:
 - Linear: issue → "In Review", PR link attached
 - Moves task file to `tasks/review/`
-- Tears down the worker's tmux window **and worktree** (the `task/<id>` branch + open PR survive — only the local checkout is removed)
+- Tears down the worker's tmux pane **and worktree** (the `task/<id>` branch + open PR survive — only the local checkout is removed)
 - Telegram: `"🔀 PR #91 opened for LIN-51. QA starting."`
 - **Triggers the QA agent** — an async, tracked agent (in `active_workers` with `role: qa`) that spawns its **own fresh worktree on the `task/<id>` branch** (Option B). The Review agent is a later, separate addition and is **not** part of this retry loop.
 
@@ -186,7 +186,7 @@ A **fundamental** rubric mismatch: the worker cleanly built the *wrong* idea, or
 
 **Out-of-scope bugs** QA stumbles on (real defects outside this task's rubric) are **ignored** by the verdict — only in-rubric problems route. They're handled by a separate future "random-bugs" subsystem (see `build-roadmap.md`), not this loop.
 
-**QA-run infra failure:** if the QA agent's window dies with the review file stuck at `WIP` (no verdict), that's a failed *run*. Orchestrator retries the QA spawn up to **N=2** times; if still no verdict, it `escalate`s to you (`blocked-escalated` + `failure_reason: "QA couldn't complete after N attempts"`). A QA agent that keeps dying is an infra/env problem — yours, not an Opus fix. This infra-retry is separate from the one-retry verdict ladder.
+**QA-run infra failure:** if the QA agent's pane dies with the review file stuck at `WIP` (no verdict), that's a failed *run*. Orchestrator retries the QA spawn up to **N=2** times; if still no verdict, it `escalate`s to you (`blocked-escalated` + `failure_reason: "QA couldn't complete after N attempts"`). A QA agent that keeps dying is an infra/env problem — yours, not an Opus fix. This infra-retry is separate from the one-retry verdict ladder.
 
 ---
 

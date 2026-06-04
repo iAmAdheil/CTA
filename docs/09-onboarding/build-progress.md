@@ -9,7 +9,7 @@ Snapshot of what's actually been built and verified in `/Users/abhishekgupta/age
 - [x] git repo initialized on `main`
 - [x] `.gitignore` covering `.env`, `__pycache__/`, `*.pyc`, `.DS_Store`, `orchestrator-state.yaml`
 - [x] Top-level directory layout: `harness/`, `templates/`, `schemas/`, `scripts/`, `agent-prompts/`
-- [x] `templates/task.yaml` — all task fields (`status`, `priority`, `depends_on`, `blocks`, `can_parallelize_with`, `model`, `linear_id`, `worktree`, `window`, `pr_url`, `pr_number`, `qa_failure_count`, `qa_out_of_scope_bugs`, `suggested_files_to_read`, `references`)
+- [x] `templates/task.yaml` — all task fields (`status`, `priority`, `depends_on`, `blocks`, `can_parallelize_with`, `model`, `linear_id`, `worktree`, `pane`, `pr_url`, `pr_number`, `qa_failure_count`, `qa_out_of_scope_bugs`, `suggested_files_to_read`, `references`)
 - [x] `templates/progress.md` — `## Log`, `## Blockers`, `## Decisions`, `## Pre-existing Failures` sections
 - [x] `templates/qa-report.md` — AC table, automated-test pass, manual-nav pass, out-of-scope findings, verdict (`PASS` / `CONDITIONAL PASS` / `FAIL`)
 - [x] `schemas/task.schema.yaml` — JSON Schema for task files, enumerates the eight valid `status` values
@@ -35,15 +35,15 @@ Wrappers-only scope. The end-to-end loop demo is deferred until `orchestrator.md
   - [x] `ensure_session` / `kill_session` — manage the `harness` tmux session
   - [x] `create_worktree` — `git worktree add -b`, idempotent on path
   - [x] `remove_worktree` — `git worktree remove`, with `--force` fallback for dirty trees
-  - [x] `kill_window` — idempotent
-  - [x] `spawn_worker` — creates worktree + opens tmux window + launches `claude --session-id <uuid>` with the prompt passed via a temp file (avoids multi-KB shell-quoting issues)
+  - [x] `kill_pane` — idempotent
+  - [x] `spawn_worker` — creates worktree + opens a pane in the shared `agents` window + launches `claude --session-id <uuid>` with the prompt passed via a temp file (avoids multi-KB shell-quoting issues)
   - [x] `send_nudge` — `tmux load-buffer` + `paste-buffer` for long/multiline text (handles `$`, `"`, `` ` ``, newlines verbatim); `tmux send-keys -l` for short single-line text; always followed by `Enter` unless `--no-submit`
-  - [x] CLI: `python -m harness.tmux_manager {spawn-worker, nudge, kill-window, remove-worktree, ensure-session, list-windows}`
-- [x] `harness/_spawn_worker.sh` — internal shell helper executed inside a fresh tmux window; `exec`s `claude --session-id "$2" "$(cat "$3")"` in the worktree directory
+  - [x] CLI: `python -m harness.tmux_manager {spawn-worker, nudge, kill-pane, remove-worktree, ensure-session, list-panes}`
+- [x] `harness/_spawn_worker.sh` — internal shell helper executed inside a fresh pane in the shared `agents` window; `exec`s `claude --session-id "$2" "$(cat "$3")"` in the worktree directory
 - [x] Verified `state_manager` end-to-end via CLI: `init` → `add-worker` × 2 → `read` (JSON) → `remove-worker` → `runnable` (correctly returned `TASK-A` + `TASK-C`, excluded `TASK-B` whose dep was still in backlog)
 - [x] Verified `spawn_worker` with a stub `claude` binary: prompt containing `"quotes"`, `$dollars`, `` `backticks` ``, and a newline reached the worker process verbatim
 - [x] Verified `send_nudge` short-text path (`send-keys -l`) and long-multiline path (`paste-buffer`) by capturing the typed text in a file via `cat > …`
-- [x] Verified `kill_window` and `remove_worktree` clean up correctly and are safe to call twice
+- [x] Verified `kill_pane` and `remove_worktree` clean up correctly and are safe to call twice
 
 ## Stage 3 — Task Breakdown Scaffolding
 
