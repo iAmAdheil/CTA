@@ -14,15 +14,17 @@ project-root/
 ├── CLAUDE.md                      ← agent operating manual (mirrored to vault 09-onboarding/)
 ├── orchestrator-state.yaml        ← live orchestrator state, never committed
 │
-├── tasks/
-│   ├── backlog/
-│   │   └── TASK-051.yaml
-│   ├── in-progress/
-│   │   └── TASK-053.yaml
-│   ├── review/
-│   │   └── TASK-050.yaml
-│   └── done/
-│       └── TASK-049.yaml
+├── tasks/                          ← one workspace per feature (= one spec/cycle)
+│   └── data-export/                ← <feature> = the spec's frontmatter id
+│       ├── backlog/
+│       │   └── TASK-051.yaml
+│       ├── in-progress/
+│       │   └── TASK-053.yaml
+│       ├── review/
+│       │   └── TASK-050.yaml       ← holds pr-opened/pr-updated/qa-failed/qa-passed
+│       ├── done/
+│       │   └── TASK-049.yaml
+│       └── board.md                ← per-feature task kanban (owner-grouped columns)
 │
 ├── docs/                          ← agent-written docs, auto-updated
 │   ├── specs/                     ← symlinked from vault 01-specs/ (or mirrored)
@@ -142,10 +144,12 @@ docs/
 | `00-inbox/` | You | You |
 | `01-specs/` | You | Orchestrator, Task Breakdown Agent, Workers, QA Agent, Review Agent, Opus |
 | `02-adrs/` | You (stubs from Orchestrator) | Workers, Opus, Task Breakdown Agent |
-| `tasks/backlog/` | Task Breakdown Agent | Orchestrator |
-| `tasks/in-progress/` | Orchestrator (moves files) | Orchestrator, Workers |
-| `tasks/review/` | Orchestrator (moves files) | Orchestrator, QA Agent |
-| `tasks/done/` | Orchestrator (moves files) | Orchestrator (dependency resolution) |
+| `tasks/<feature>/` | Task Breakdown Agent (creates the workspace) | Orchestrator |
+| `tasks/<feature>/backlog/` | Task Breakdown Agent | Orchestrator |
+| `tasks/<feature>/in-progress/` | Orchestrator (moves files) | Orchestrator, Workers |
+| `tasks/<feature>/review/` | Orchestrator (moves files) | Orchestrator, QA Agent |
+| `tasks/<feature>/done/` | Orchestrator (moves files) | Orchestrator (dependency resolution) |
+| `tasks/<feature>/board.md` | Task Breakdown (seeds), Orchestrator (moves cards) | You |
 | `04-active-features/*/progress.md` | Workers | Orchestrator (watches for BLOCKER), You |
 | `04-active-features/*/decisions.md` | Workers, Orchestrator (Opus output) | Workers, Review Agent |
 | `04-active-features/*/qa-instructions-<id>.md` | Worker (the QA recipe) | QA Agent |
@@ -192,10 +196,11 @@ This file is never committed — add it to `.gitignore`. It's ephemeral operatio
 ## The Task File Schema
 
 ```yaml
-# tasks/backlog/TASK-051.yaml
+# tasks/data-export/backlog/TASK-051.yaml
 id: TASK-051
 title: "Export service core"
 spec: "docs/specs/feature-data-export.md"
+feature: data-export     # spec frontmatter id; the <feature> segment of the path + active-features dir
 status: backlog          # backlog | in-progress | pr-opened | pr-updated | qa-failed | done | blocked | blocked-escalated
 priority: high           # critical | high | medium | low
 depends_on: []
@@ -230,4 +235,4 @@ references:              # files the worker reads alongside the spec — wirefra
 - The **spec** is the source of truth for what should be built
 - The **task file** is the source of truth for execution state
 - The **orchestrator-state.yaml** is the source of truth for what the orchestrator is doing right now
-- The **kanban** is navigation, not state — it mirrors task file statuses, it does not own them
+- The **kanban** is navigation, not state — it mirrors statuses, it does not own them. Two levels: the global **spec** board (`docs/_kanban/features.md`, one card per feature) and a per-feature **task** board (`tasks/<feature>/board.md`, one card per task, columns grouped by who owns the next action — In Review / QA Failed / Human Review surface the states the `review/` folder used to hide). The orchestrator moves cards on both as the underlying state changes.

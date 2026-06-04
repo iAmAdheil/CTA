@@ -160,7 +160,7 @@ SPEC APPROVED
   └─→ _kanban: card → "Ready"
 
 TASK CREATED
-  └─→ tasks/backlog/TASK-{NNN}.yaml (Task Breakdown Agent writes)
+  └─→ tasks/{feature}/backlog/TASK-{NNN}.yaml (Task Breakdown Agent writes; feature = spec's frontmatter id)
   └─→ _kanban: card → "In Progress"
   └─→ Telegram: "📋 Feature broken into N tasks"
 

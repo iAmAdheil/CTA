@@ -1,6 +1,7 @@
 id: TASK-NNN
 title: ""
 spec: "docs/specs/feature-{name}.md"
+feature: "feature-{name}"   # spec frontmatter id; the <feature> segment of tasks/<feature>/<state>/<id>.yaml
 status: backlog          # backlog | in-progress | pr-opened | pr-updated | qa-failed | done | blocked | blocked-escalated
 priority: medium         # critical | high | medium | low
 depends_on: []

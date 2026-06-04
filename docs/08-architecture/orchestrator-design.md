@@ -184,7 +184,7 @@ max_workers: 3           # hard cap on simultaneous workers
 
 # Orchestrator checks before spawning:
 # 1. len(active_workers) < max_workers
-# 2. All task.depends_on are in tasks/done/
+# 2. All task.depends_on are done (their files sit in tasks/<feature>/done/)
 # 3. The task belongs to the current spec — the harness works one spec at a
 #    time (serial-per-spec), so under normal operation every active worker is
 #    on the same feature. See feature-lifecycle.md "One Spec at a Time".

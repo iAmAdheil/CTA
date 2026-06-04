@@ -17,10 +17,10 @@ how task files cross the worktree boundary.
 A git worktree is a separate physical directory checked out **from a commit**. Two facts follow:
 
 1. **Uncommitted/untracked files in the main worktree are not visible in a new worktree.** The
-   orchestrator creates a task file (breakdown writes `tasks/backlog/<id>.yaml`, the orchestrator
-   `mv`s it to `tasks/in-progress/` and edits frontmatter) but never commits it. A worktree cut
-   from `main`'s HEAD therefore contains *neither* copy. A worker told to `Read
-   tasks/in-progress/<id>.yaml` (a relative path resolving inside its worktree) fails outright.
+   orchestrator creates a task file (breakdown writes `tasks/<feature>/backlog/<id>.yaml`, the
+   orchestrator `mv`s it to `tasks/<feature>/in-progress/` and edits frontmatter) but never commits
+   it. A worktree cut from `main`'s HEAD therefore contains *neither* copy. A worker told to `Read
+   tasks/<feature>/in-progress/<id>.yaml` (a relative path resolving inside its worktree) fails outright.
 
 2. **A worktree's edits are trapped on its branch.** If the worker edited its *own* worktree copy
    of the task file and set `status: pr-opened`, that change would live only on `task/<id>` (or
@@ -79,7 +79,7 @@ and reads spec/`CLAUDE.md`/code from its worktree.
 - **Workers reach outside their worktree** for control-plane files. This is deliberate and the one
   exception to worktree isolation; it is confined to gitignored state, never code.
 - **The durable record of tasks is not git.** Local task files are working state; history/audit
-  lives in the spec, ADRs, and (Stage 5) Linear. Completed task files are archived to `tasks/done/`
+  lives in the spec, ADRs, and (Stage 5) Linear. Completed task files are archived to `tasks/<feature>/done/`
   locally.
 - **`docs/active-features/` is control-plane, not a PR deliverable.** The orchestrator/QA/
   blocker-resolver exchange these live. The blocker-resolver's decision still reaches a running

@@ -18,10 +18,11 @@ echo
 # ---------------------------------------------------------------------------
 # 1. tasks/
 # ---------------------------------------------------------------------------
-for d in backlog in-progress review done; do
-  mkdir -p "tasks/$d"
-done
-echo "✓ tasks/{backlog,in-progress,review,done}/"
+# Task files are feature-scoped: tasks/<feature>/{backlog,in-progress,review,done}/.
+# The per-feature workspace (its four state subdirs + board.md) is created on
+# demand by task-breakdown when a spec is broken down, so we only seed the root.
+mkdir -p tasks
+echo "✓ tasks/  (feature workspaces created per-spec by task-breakdown)"
 
 # ---------------------------------------------------------------------------
 # 2. docs/

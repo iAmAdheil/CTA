@@ -9,8 +9,9 @@
 #   - Runs `claude --print "/task-breakdown <spec-path>"` from the current
 #     directory (must be the project root).
 #   - The skill itself reads the spec, existing ADRs, CLAUDE.md, and any
-#     `references:` files the spec points at. It writes N task YAML files to
-#     tasks/backlog/ via the Write tool.
+#     `references:` files the spec points at. It creates the feature workspace
+#     tasks/<feature>/{backlog,in-progress,review,done}/ + board.md and writes N
+#     task YAML files to tasks/<feature>/backlog/ via the Write tool.
 #
 # Environment overrides:
 #   HARNESS_BREAKDOWN_MODEL       default: sonnet

@@ -62,12 +62,13 @@ This still guarantees the original property — an agent never discovers an arch
 
 Orchestrator invokes the Task Breakdown Agent with the approved spec + all ADRs.
 
-Agent output: individual task files in `tasks/backlog/`, each with:
+The agent first creates the feature workspace — `tasks/<feature>/{backlog,in-progress,review,done}/` plus a seeded `board.md` — where `<feature>` is the spec's frontmatter `id`. It then writes individual task files into `tasks/<feature>/backlog/`, each with:
 
 ```yaml
 id: TASK-051
 title: Export service core
 spec: docs/01-specs/feature-data-export.md
+feature: data-export
 depends_on: []
 blocks: [TASK-052, TASK-054]
 can_parallelize_with: [TASK-053]
@@ -143,7 +144,7 @@ Worker opens PR via `gh pr create` with description generated from the spec's ac
 
 Orchestrator detects the status change:
 - Linear: issue → "In Review", PR link attached
-- Moves task file to `tasks/review/`
+- Moves task file to `tasks/<feature>/review/` (and the card on `tasks/<feature>/board.md`)
 - Tears down the worker's tmux pane **and worktree** (the `task/<id>` branch + open PR survive — only the local checkout is removed)
 - Telegram: `"🔀 PR #91 opened for LIN-51. QA starting."`
 - **Triggers the QA agent** — an async, tracked agent (in `active_workers` with `role: qa`) that spawns its **own fresh worktree on the `task/<id>` branch** (Option B). The Review agent is a later, separate addition and is **not** part of this retry loop.
@@ -204,7 +205,7 @@ A task at `qa-passed` (or `blocked-escalated`) sits in the **Human Review** colu
 
 This is **not** done inline by the orchestrator. A separate merge-detection/archival agent (see `build-roadmap.md`):
 - detects the human merged the PR (`gh pr view --json state,mergedAt`) and sets the task `status: done`
-- Kanban: task card → "Done"; the orchestrator's archive step then `mv`s the task file to `tasks/done/`
+- Kanban: task card → "Done" on `tasks/<feature>/board.md`; the orchestrator's archive step then `mv`s the task file to `tasks/<feature>/done/`
 - Archives `04-active-features/{feature}/`; stubs runbooks / updates `06-api/` / `08-architecture/data-model.md` as relevant
 - Telegram: `"✅ LIN-51 merged."`
 
@@ -220,8 +221,9 @@ several specs at once; the orchestrator still drains them serially, highest
 priority first.
 
 **How the gate works:**
-- A spec is "being worked" while any of its tasks sit in `tasks/backlog/` or
-  `tasks/in-progress/`.
+- A spec is "being worked" while any of its tasks sit in its workspace's
+  `backlog/`, `in-progress/`, or `review/` subdir with an active status. (The
+  gate is status-based, not folder-based — see "Active statuses" below.)
 - While a spec is being worked, no other spec is broken down.
 - Once the current spec's tasks are all in a **"now handled by the human"** state —
   `qa-passed`, `done`, `blocked`, or `blocked-escalated` — the gate releases the

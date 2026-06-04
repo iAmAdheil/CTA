@@ -22,7 +22,7 @@ is captured in `harness-test-playbook.md`. Gaps it surfaced are noted below.
 - [x] Drop a sample spec into `docs/specs/` with `status: approved`
 - [x] Run breakdown — verified task files appear, schema-valid
 - [x] Spawn workers in tmux windows — both ran to `pr-opened` hands-off
-- [x] Teardown + move to `tasks/review/`; archive `done/` → verified
+- [x] Teardown + move to `tasks/<feature>/review/`; archive `done/` → verified
 - [x] Patch wrappers/skills based on what broke — see resolved gaps below
 
 Resolved during/after the test:
@@ -126,7 +126,7 @@ sections below; out of scope for the QA retry loop.
 - [ ] Write `/doc-closeout` skill  
   Post-merge: update `docs/api/`, stub `docs/runbooks/`, update `docs/architecture/data-model.md` if schema changed, archive `docs/active-features/<feature>/`.
 - [ ] **Merge-detection / archival agent (separate from the QA loop, decided 2026-06-01)**  
-  The QA loop ends at `qa-passed` (card in Human Review, PR open, awaiting the human's manual merge — no auto-merge). A **separate agent** owns the rest: detect that the human merged the PR (e.g. `gh pr view --json state,mergedAt`), set the task `status: done`, and trigger the archive (orchestrator step 5 then `mv`s to `tasks/done/`). The merge is the signal, pulled from GitHub — not a manual status flip. The orchestrator does NOT do this inline.
+  The QA loop ends at `qa-passed` (card in Human Review, PR open, awaiting the human's manual merge — no auto-merge). A **separate agent** owns the rest: detect that the human merged the PR (e.g. `gh pr view --json state,mergedAt`), set the task `status: done`, and trigger the archive (orchestrator step 5 then `mv`s to `tasks/<feature>/done/`). The merge is the signal, pulled from GitHub — not a manual status flip. The orchestrator does NOT do this inline.
 - [ ] Update `/orchestrator` skill — step 5 calls doc-closeout after archiving a done task
 - [ ] Write `/backlog-triage` skill (Opus, scheduled)  
   Reads all backlog tasks + Linear state. Reorders by priority, posts a daily plan.

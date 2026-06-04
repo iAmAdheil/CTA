@@ -122,7 +122,7 @@ The harness engine. Build and test each piece before wiring them together.
 
 **Monitors:**
 - `01-specs/` — new file with `status: approved`
-- `tasks/in-progress/*/` — task status field changes
+- `tasks/*/in-progress/*.yaml` — task status field changes (any feature workspace)
 - `docs/active-features/*/progress.md` — BLOCKER section appears
 
 **Note:** Start with the sleep-poll orchestrator (Project 6). Add this once the loop is working and you want faster response times.
