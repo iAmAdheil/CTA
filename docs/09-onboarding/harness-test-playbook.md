@@ -323,18 +323,20 @@ its pane — a "Do you trust the files in this folder?" prompt means the trust p
 
 ### 5. Teardown (orchestrator step 4)
 
-For each `pr-opened` task:
+For each `pr-opened` task — **kill the pane only; the worktree persists for QA to reuse** (it's
+one-per-task, removed later when the task goes terminal — not at this handoff):
 
 ```bash
 conda run -n harness python -m harness.tmux_manager kill-pane --pane %7
-conda run -n harness python -m harness.tmux_manager remove-worktree --path ~/wt-TASK-001
 conda run -n harness python -m harness.state_manager remove-worker --task-id TASK-001
 mv tasks/in-progress/TASK-001.yaml tasks/review/TASK-001.yaml
+# NOTE: do NOT remove-worktree here — the QA agent (next section) reuses ~/wt-TASK-001.
 ```
 
 **Verify:** once the last agent pane is killed the `agents` window closes, leaving only window 0
-(`orchestrator`); `git worktree list` shows only the main worktree; `active_workers` is `[]`; the
-torn-down task(s) in `tasks/review/`.
+(`orchestrator`); `active_workers` is `[]`; the torn-down task(s) in `tasks/review/`. **`git worktree
+list` still shows `wt-TASK-001`** — that's expected now; it's reclaimed only when the task reaches
+`qa-passed` / `blocked-escalated` / `blocked` / `done`.
 
 ### 6. QA cycle (orchestrator step 4) — issue #4
 
@@ -346,7 +348,9 @@ TID=TASK-001
 # the worker filled `branch:` and wrote a qa-instructions-<id>.md recipe at pr-opened — confirm:
 grep -E '^(branch|qa_instructions|status):' tasks/review/$TID.yaml
 
-# spawn QA on the EXISTING branch (own worktree, role: qa)
+# spawn QA on the EXISTING branch — reuses the worker's persistent worktree (role: qa).
+# provision-worker resolves ../wt-$TID from the task id, so $WT below is the SAME
+# checkout the worker used; only a fresh pane is opened in it.
 PF=$(mktemp /tmp/spawn-$TID.XXXXXX)
 cat > "$PF" <<EOF
 You are the QA agent on the agent-harness. Follow the /qa-agent skill.
@@ -371,12 +375,13 @@ grep -m1 '^\*\*status:\*\*' "$(grep '^qa_report:' tasks/review/$TID.yaml | awk '
 
 **Route by verdict** (orchestrator step 4C). **Before spawning ANY QA agent (first or re-QA), reset
 the report `**status:**` to `WIP`** (or delete the report) so a read can't consume the previous
-round's stale verdict. Then, after a verdict, tear down the QA agent (kill-pane → remove-worktree →
-remove-worker):
+round's stale verdict. Then, after a verdict, tear down the QA agent — **kill-pane → remove-worker**.
+**Remove the worktree only on a terminal verdict** (`looks-good`/`escalate`); on `needs-changes`
+keep it so the Opus fixer (and re-QA) reuse the same checkout:
 
-- `looks-good` → `status: qa-passed`; card → Human Review.
-- `escalate` → `status: blocked-escalated` + set `failure_reason`; card → Human Review.
-- `needs-changes` → `status: qa-failed`, bump `qa_failure_count` to 1; card → QA Failed; then spawn
+- `looks-good` → `status: qa-passed`; card → Human Review. **Terminal → also `remove-worktree --path $WT`.**
+- `escalate` → `status: blocked-escalated` + set `failure_reason`; card → Human Review. **Terminal → also `remove-worktree --path $WT`.**
+- `needs-changes` → `status: qa-failed`, bump `qa_failure_count` to 1; card → QA Failed; **keep the worktree**; then spawn
   the **Opus fixer** (same three calls, `--label fixer`, `--role fixer`, `--model opus` on
   launch-worker, prompt = "/worker … FIX MODE"). It pushes to the same branch and sets
   `pr-updated`; re-spawn QA. **2nd-pass re-QA is terminal:** anything but `looks-good` → `escalate`.
@@ -423,8 +428,12 @@ See the orchestrator skill, step 4 (test-scaffold sub-step **4S**), for the exac
 (`todo.completed` forced to `false`) on `task/TASK-001`; real QA caught it behaviorally
 (`needs-changes`: "PATCH `{completed:true}` → 200 but body shows `completed:false`", 9/10 tests) with
 no forced wording; the Opus fixer repaired it (`pr-updated`); re-QA returned `looks-good` (10/10) →
-`qa-passed`. Injected exactly once (`qa_verify_injected: true`, no double-inject on re-QA); ephemeral
-`wt-verify-TASK-001` cleaned up.
+`qa-passed`. Injected exactly once (`qa_verify_injected: true`, no double-inject on re-QA).
+
+> **Note (worktree-lifecycle change):** the validation above predates the one-worktree-per-task
+> change. 4S no longer cuts an ephemeral `wt-verify-<id>`; it injects the defect **directly into the
+> task's persistent `wt-<id>`** (the worker's, which now survives `pr-opened`) and commits there, with
+> nothing to tear down — that same worktree goes on to host QA and the fixer.
 
 To drive this section by hand (the orchestrator does it automatically when the var is set): on the
 PR branch, hand-edit the implementation to violate one rubric item before spawning QA, commit it,

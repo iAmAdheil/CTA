@@ -144,9 +144,9 @@ Worker opens PR via `gh pr create` with description generated from the spec's ac
 Orchestrator detects the status change:
 - Linear: issue → "In Review", PR link attached
 - Moves task file to `tasks/review/`
-- Tears down the worker's tmux pane **and worktree** (the `task/<id>` branch + open PR survive — only the local checkout is removed)
+- Tears down the worker's tmux **pane only** — the worktree persists (the `task/<id>` branch + open PR survive regardless; the local checkout is *kept* for QA to reuse)
 - Telegram: `"🔀 PR #91 opened for LIN-51. QA starting."`
-- **Triggers the QA agent** — an async, tracked agent (in `active_workers` with `role: qa`) that spawns its **own fresh worktree on the `task/<id>` branch** (Option B). The Review agent is a later, separate addition and is **not** part of this retry loop.
+- **Triggers the QA agent** — an async, tracked agent (in `active_workers` with `role: qa`) that **reuses the task's worktree** on `task/<id>`. The worktree is one-per-task and lives until the task leaves its active states (see orchestrator-design.md, "One worktree per task"). The Review agent is a later, separate addition and is **not** part of this retry loop.
 
 ---
 
@@ -157,7 +157,7 @@ QA is **behavioral, not a code review.** It runs the feature and forms its verdi
 - **The rubric** — `expected_behavior` in the task file, authored by **task-breakdown** from the spec, *before code existed*. Implementation-agnostic ("given X, observable outcome Y"); its vocabulary tracks the task's layer (backend = API/data contract, frontend = UI behaviour, E2E = journey). **This is the grading truth.**
 - **The recipe** — `qa-instructions-<TASK-ID>.md`, authored by the **worker**, telling QA *how* to drive the specific feature it built (and the worker's claimed I/O). **A map, never the rubric.**
 - **How to run the project** — the project's own run/launch skill.
-- Its **own worktree** on the `task/<id>` branch.
+- The task's **worktree** on the `task/<id>` branch — the same one the worker used (reused, not freshly cut).
 
 **Why three authors?** If the worker authored the expectations, it could write them to match its own wrong code (false pass); if QA authored them, it could invent its own (false fail). Authoring the rubric upstream in task-breakdown — a party that neither implements nor tests — removes both biases.
 
@@ -258,7 +258,7 @@ Orchestrator          → spin up workers in worktrees (parallelizes where deps 
 Workers               → execute, write progress.md
 Blockers              → Orchestrator → Opus → decision → worker unblocked
 Worker done           → fills branch + qa-instructions, PR opened via gh cli
-Orchestrator          → tears down worker, triggers async QA (own worktree)
+Orchestrator          → tears down worker pane (worktree persists), triggers async QA (reuses it)
 QA agent              → runs the feature, writes qa-report-<ID>.md verdict
 
 QA looks-good:        → task qa-passed → You (phone) → merge manually

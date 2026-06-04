@@ -23,7 +23,13 @@ properties:
           pattern: "^(TASK|BUG)-[0-9]+$"
         worktree:
           type: string
-          description: Path (absolute or relative to project root) of the git worktree.
+          description: >-
+            Path (absolute or relative to project root) of the git worktree.
+            One worktree per TASK (../wt-<id>), not per agent: the worker creates
+            it and QA/fixer/re-QA entries reuse the same path. It persists across
+            role handoffs and is removed only when the task leaves its active
+            states; so several active_workers entries over a task's life share
+            one worktree value.
         pane:
           type: string
           pattern: "^%[0-9]+$"

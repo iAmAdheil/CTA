@@ -44,8 +44,8 @@ window 7  — Monitor                              (live state, logs, cost)
 - **Role:** Execute a single task end-to-end. Read spec + task file + CLAUDE.md. Write code. Open PR. Signal done.
 - **Inputs:** Task file, spec, CLAUDE.md, relevant ADRs
 - **Outputs:** Code commits, PR via `gh pr create`, `progress.md` updates, `decisions.md` entries
-- **Lifespan:** 30 minutes to a few hours per task. Torn down after PR is opened.
-- **Worktree:** Each runs in its own `git worktree` — isolated working directory, no conflicts with other workers.
+- **Lifespan:** 30 minutes to a few hours per task. The worker's **pane** is torn down after the PR is opened; its **worktree is not** (QA/fixer reuse it — see below).
+- **Worktree:** One `git worktree` **per task** (`../wt-<id>`), not per agent — an isolated working directory, no conflicts with other tasks. The worker creates it; QA and the Opus fixer reuse the same checkout. It lives until the task leaves its active states, then the orchestrator removes it (orchestrator-design.md, "One worktree per task").
 
 ---
 
@@ -53,7 +53,7 @@ window 7  — Monitor                              (live state, logs, cost)
 
 ### QA Agent  (behavioral, async — issue #4)
 - **Model:** Sonnet
-- **Mode:** Async tracked agent (in `active_workers` with `role: qa`), its own worktree on the `task/<id>` branch. Bounded by `max_workers` like a worker — within one spec, several tasks can be in QA at once.
+- **Mode:** Async tracked agent (in `active_workers` with `role: qa`), **reusing the task's worktree** on the `task/<id>` branch (the worker's, which persists past `pr-opened`). Bounded by `max_workers` like a worker — within one spec, several tasks can be in QA at once.
 - **Role:** **RUN the feature** and judge observed behaviour against the task's `expected_behavior` rubric. Two checks: does the recipe execute as claimed; does the claimed/observed behaviour satisfy the rubric. **Never reviews the diff.**
 - **Inputs:** task `expected_behavior` (rubric, the grading truth), worker's `qa_instructions` recipe (the map), the project run/launch skill, its worktree
 - **Outputs:** `qa-report-<id>.md` whose `status:` is `WIP` → `looks-good` / `needs-changes` / `escalate` (the durable verdict the orchestrator polls). Does NOT set the task `status`.
@@ -61,7 +61,7 @@ window 7  — Monitor                              (live state, logs, cost)
 
 ### Opus Fixer  (worker fix-mode — issue #4)
 - **Model:** Opus
-- **Mode:** Async tracked agent (`role: fixer`), its own worktree on the existing `task/<id>` branch.
+- **Mode:** Async tracked agent (`role: fixer`), **reusing the task's worktree** on the existing `task/<id>` branch.
 - **Role:** On a `needs-changes` verdict, fix only what QA flagged, push to the **same** branch (no new PR), set `status: pr-updated` → re-QA. The verdict ladder is **one** retry.
 - **Triggered by:** Orchestrator at `status: qa-failed` (step 4D)
 

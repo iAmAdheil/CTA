@@ -72,7 +72,7 @@ Resolved:
 Design fully locked 2026-06-01 — see the `qa-loop-verdict-design` memory + the
 rewritten `feature-lifecycle.md` Stage 6 / `orchestrator-design.md`. QA is
 **behavioral** (runs the feature, verdict from observed behaviour — NOT a diff review),
-**async** (tracked agent, own worktree on `task/<id>`, Option B), with a **one-retry**
+**async** (tracked agent, **reusing the task's one persistent worktree** on `task/<id>`), with a **one-retry**
 ladder and **owner-based verdicts** (`looks-good` / `needs-changes` / `escalate`).
 
 **Schema changes first** (the connective tissue everything else references):
@@ -86,7 +86,7 @@ ladder and **owner-based verdicts** (`looks-good` / `needs-changes` / `escalate`
 **A. QA verifier** — mirror the `run-advisor.sh` shape (`claude --print`, budget cap,
 `--dangerously-skip-permissions`), but spawned **async** like a worker.
 - [ ] Write `/qa-agent` skill — inputs: task `expected_behavior` (rubric), worker recipe
-  (`qa_instructions`), project run/launch skill, own worktree. Two checks (execute recipe;
+  (`qa_instructions`), project run/launch skill, the task's reused worktree. Two checks (execute recipe;
   recipe-vs-rubric). Writes `qa-report-<TASK-ID>.md` with `status:` WIP→verdict. Browser nav
   (Playwright/Stagehand) only for web apps w/ a runnable URL — skip for CLI/toy/MVH.
 - [x] `tmux_manager` — variant that provisions a worktree on an **existing** branch (QA + fixer) — `--existing-branch`.
@@ -94,7 +94,7 @@ ladder and **owner-based verdicts** (`looks-good` / `needs-changes` / `escalate`
 - [N/A] ~~`scripts/run-qa.sh`~~ — not needed; QA is async (spawned via `tmux_manager` like a worker), not a sync `claude --print` wrapper.
 
 **B. Orchestrator triggers QA** (async, tracked):
-- [ ] At `pr-opened`/`pr-updated`: spawn QA into `active_workers` with `role: qa`, own worktree.
+- [ ] At `pr-opened`/`pr-updated`: spawn QA into `active_workers` with `role: qa`, reusing the task's worktree.
 - [ ] Update the `next-spec` advance gate — `pr-opened`/`qa-failed`/`pr-updated` are ACTIVE
   (hold the next spec); release only at `qa-passed`/`done`/`blocked`/`blocked-escalated`.
 
@@ -105,7 +105,7 @@ ladder and **owner-based verdicts** (`looks-good` / `needs-changes` / `escalate`
   anything but `looks-good` → escalate.
 - [ ] `escalate` → `blocked-escalated` + write `failure_reason` into the task file.
 - [ ] QA-run died (window gone, review file stuck WIP) → retry QA spawn up to N=2 → escalate.
-- [ ] Crash-safe teardown for the QA/fixer agents (same move-card→kill→remove-worktree→remove-worker LAST order).
+- [ ] Crash-safe teardown for the QA/fixer agents (move-card→kill-pane→remove-worker LAST; remove-worktree only when the task goes terminal, not at every handoff).
 
 **`/worker` fix-mode** (gap #9):
 - [ ] Worker fills `branch` + writes `qa-instructions-<TASK-ID>.md` on a fresh task.

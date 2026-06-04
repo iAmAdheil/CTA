@@ -51,7 +51,7 @@ cycle 52: qa-report-TASK-051.md verdict looks-good → set qa-passed, board → 
 | New file in `01-specs/` with `status: approved` | Invoke Task Breakdown Agent |
 | Task file status → `in-progress` (set by orchestrator) | Spawn worker in new worktree + a pane in the shared agents window |
 | `progress.md` contains BLOCKER section | Check if answerable from docs; if not, invoke Opus |
-| Task file status → `pr-opened` (set by worker) | Tear down worker pane + worktree, spawn **async QA agent** (own worktree on `task/<id>`). Review agent is a later, separate addition. |
+| Task file status → `pr-opened` (set by worker) | Tear down worker **pane** (the worktree persists), spawn **async QA agent** that **reuses** the task's worktree on `task/<id>`. Review agent is a later, separate addition. |
 | Task file status → `pr-updated` (set by Opus fixer) | Trigger QA again (re-QA) on the same branch |
 | `qa-report-<ID>.md` verdict — `looks-good` | Set task `qa-passed`, board → Human Review, notify you |
 | `qa-report-<ID>.md` verdict — `needs-changes` | Set `qa-failed`, spawn **Opus fixer** on the same task (pushes to existing `branch:`, sets `pr-updated`) |
@@ -138,12 +138,21 @@ Workers are spun up with:
 2. `tmux split-window` into the shared `agents` window (the first agent creates the window) — its pane id (e.g. `%7`) is the worker's durable identity
 3. Claude Code started in that pane with the task handoff prompt
 
-Workers are torn down when they signal `pr-opened`:
+When a worker signals `pr-opened`, only its **pane** is torn down:
 1. `tmux kill-pane -t {pane}` (killing the last pane closes the agents window; it's recreated on the next spawn)
-2. `git worktree remove {path}` (the `task/<id>` branch + open PR survive)
-3. Remove from `active_workers` in state
+2. Remove from `active_workers` in state
 
-The QA agent and the Opus fixer are tracked the same way (in `active_workers`, the QA one with `role: qa`), each spawning its **own** fresh worktree on the existing `task/<id>` branch and torn down on completion (Option B — worktree stays 1:1 with an `active_workers` entry, so the crash-safe teardown invariant holds unchanged).
+The **worktree is not removed here.** It persists past the worker so the QA agent (and, if needed, the Opus fixer and re-QA) can reuse the same checkout.
+
+### One worktree per task, removed when the task leaves the active set
+
+There is exactly **one** worktree per task, `../wt-<id>`, on the `task/<id>` branch. The worker creates it; QA, the Opus fixer, and re-QA all **reuse** it — each gets a fresh pane, but the same checkout. Its lifetime is bound to the **task status**, not to any single agent:
+
+- It is created when the worker spawns (`backlog` → `in-progress`).
+- It survives every role handoff while the task is **active** — `in-progress`, `pr-opened`, `pr-updated`, `qa-failed`. Each agent's teardown kills only its pane.
+- It is removed exactly once, when the task transitions to a state the human now owns — `qa-passed` (looks-good), `blocked-escalated` (escalate or QA-failed-to-run ×N), `blocked` (worker hit a blocker), or `done` (after archive). That set is precisely the complement of the active statuses, so the rule is a single predicate: **remove the worktree iff the task is non-active.**
+
+This replaces the earlier "Option B" design (a fresh worktree per agent, 1:1 with each `active_workers` entry, torn down at every handoff). The crash-safe ordering is unchanged — board move first, `remove-worker` last — but `remove-worktree` is now gated on the task's status rather than fired on every teardown. The `task/<id>` branch + open PR survive regardless of when the local checkout goes.
 
 ---
 

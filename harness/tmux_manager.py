@@ -18,7 +18,10 @@ workers — so the orchestrator's prompt stays focused on policy not plumbing.
   they survive other panes opening/closing — unlike pane *indices*, which
   renumber. The orchestrator stores this id and uses it for launch/teardown.
 - Worktrees are created as siblings of the project root by default:
-  `../wt-<task-id>`. Override per-call.
+  `../wt-<task-id>`. Override per-call. There is **one worktree per task**, not
+  per agent: the worker creates it, and QA / the Opus fixer / re-QA all reuse
+  the same path on the same `task/<id>` branch. It lives until the orchestrator
+  removes it when the task leaves its active states (not at each role handoff).
 - Worker branches are named `task/<task-id>`.
 - Each worker session has a pre-allocated UUID so the orchestrator can
   `claude --resume <uuid>` later (e.g. for QA-fail fix mode in Stage 6).
@@ -147,10 +150,14 @@ def kill_session(session: str | None = None) -> None:
 def _resolve_worktree_path(task_id: str, worktree: str | None, label: str = "worker") -> Path:
     if worktree:
         return Path(worktree).expanduser().resolve()
-    # Sibling of cwd, named after the task. Non-worker agents (qa/fixer) get a
-    # label-prefixed path so they never collide with a worker's worktree dir.
-    stem = f"wt-{task_id}" if label == "worker" else f"wt-{label}-{task_id}"
-    return (Path.cwd().parent / stem).resolve()
+    # Sibling of cwd, named after the TASK — never the label. There is exactly
+    # one worktree per task (`../wt-<task-id>`), created when the worker spawns
+    # and reused by every later agent on the same task (QA, Opus fixer, re-QA).
+    # It persists until the task leaves its active states; the orchestrator is
+    # what removes it (see the orchestrator skill, step 4 / 7). `label` still
+    # titles the pane and names the prompt file, but it does NOT fork the path —
+    # a label-prefixed path would defeat the reuse this whole design relies on.
+    return (Path.cwd().parent / f"wt-{task_id}").resolve()
 
 
 def resolve_base_branch(
@@ -198,12 +205,16 @@ def create_worktree(
       existing branch if `-b` reports it already exists.
     - `new_branch=False` (QA / Opus fixer): `git worktree add <path> <branch>` —
       checks out the EXISTING `task/<id>` branch (the PR branch the worker left
-      behind). Under Option B only one worktree holds the branch at a time
-      (the worker's was removed at pr-opened), so this never collides.
+      behind). In normal flow the per-task worktree already exists (the worker's,
+      which now persists across the whole QA loop), so the idempotency check
+      below short-circuits and this never runs. It stays correct for the edge
+      case where the worktree was removed by hand and a later agent recreates it.
     """
     p = Path(path).expanduser().resolve()
     cwd = str(repo_root) if repo_root else None
-    # Check if this path is already a registered worktree
+    # Check if this path is already a registered worktree. This is the common
+    # case for QA/fixer/re-QA: they reuse the worker's still-live `../wt-<id>`,
+    # so creation is a no-op and they just open a fresh pane in it.
     out = _run(["git", "worktree", "list", "--porcelain"], capture=True, check=False)
     if out.returncode == 0 and f"worktree {p}" in out.stdout:
         return p
