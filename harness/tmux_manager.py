@@ -7,9 +7,16 @@ workers — so the orchestrator's prompt stays focused on policy not plumbing.
 
 ## Conventions
 
-- All worker windows live in one tmux session, named "harness" by default
-  (override with `HARNESS_TMUX_SESSION`). Session 0 by convention holds the
-  orchestrator; worker windows are 1+; the monitor (Stage 8) sits at 7.
+- Everything lives in one tmux session, named "harness" by default (override
+  with `HARNESS_TMUX_SESSION`). Window 0 by convention holds the orchestrator.
+  **Every spawned agent (worker, QA, fixer) is a PANE in one shared "agents"
+  window** (override the name with `HARNESS_AGENTS_WINDOW`), so all live agents
+  are visible together in a single window. The window is created on the first
+  agent and disappears when the last pane is killed — it self-heals.
+- An agent's durable identity is its tmux **pane id** (e.g. `%7`), not a window
+  index. Pane ids are globally unique within the server and are never reused, so
+  they survive other panes opening/closing — unlike pane *indices*, which
+  renumber. The orchestrator stores this id and uses it for launch/teardown.
 - Worktrees are created as siblings of the project root by default:
   `../wt-<task-id>`. Override per-call.
 - Worker branches are named `task/<task-id>`.
@@ -19,7 +26,7 @@ workers — so the orchestrator's prompt stays focused on policy not plumbing.
 ## Why a helper shell script
 
 Passing a multi-KB prompt as a positional arg to `claude` through tmux's
-`new-window <command-string>` would require fragile shell quoting. Instead
+`split-window <command-string>` would require fragile shell quoting. Instead
 we write the prompt to a temp file and invoke `harness/_spawn_worker.sh`,
 which reads the file with `"$(cat ...)"` — bash does not re-expand the
 command-substitution result inside double-quotes, so any chars in the
@@ -49,14 +56,16 @@ from typing import Any
 
 
 DEFAULT_SESSION = "harness"
+DEFAULT_AGENTS_WINDOW = "agents"
+AGENTS_WINDOW_ENV = "HARNESS_AGENTS_WINDOW"
 DEFAULT_BASE_BRANCH = "main"
 SPAWN_HELPER = Path(__file__).parent / "_spawn_worker.sh"
 CLAUDE_CONFIG = Path.home() / ".claude.json"
 PROMPT_DIR_ENV = "HARNESS_PROMPT_DIR"
 # Long-text threshold above which we use paste-buffer instead of send-keys
 NUDGE_LITERAL_MAX = 2000
-# Idle command a provisioned-but-not-yet-launched worker window runs. It holds
-# the window open (and its index stable) until `launch_worker` respawns it with
+# Idle command a provisioned-but-not-yet-launched agent pane runs. It holds
+# the pane open (and its pane id stable) until `launch_worker` respawns it with
 # the real claude command. INT_MAX seconds (~68y); BSD/GNU sleep both accept it.
 PLACEHOLDER_CMD = "sleep 2147483647"
 
@@ -76,6 +85,27 @@ def _run(cmd: list[str], *, check: bool = True, capture: bool = False) -> subpro
 
 def _session_name() -> str:
     return os.environ.get("HARNESS_TMUX_SESSION", DEFAULT_SESSION)
+
+
+def _agents_window_name() -> str:
+    return os.environ.get(AGENTS_WINDOW_ENV, DEFAULT_AGENTS_WINDOW)
+
+
+def _agents_window_target(session: str) -> str | None:
+    """Return `session:index` of the shared agents window, or None if absent."""
+    want = _agents_window_name()
+    res = _run(
+        ["tmux", "list-windows", "-t", session, "-F", "#{window_index} #{window_name}"],
+        capture=True,
+        check=False,
+    )
+    if res.returncode != 0:
+        return None
+    for line in res.stdout.splitlines():
+        idx, _, name = line.partition(" ")
+        if name == want:
+            return f"{session}:{idx}"
+    return None
 
 
 def _prompt_dir() -> Path:
@@ -263,33 +293,77 @@ def remove_worktree(path: str | os.PathLike, *, force: bool = False) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Window management
+# Pane management
 # ---------------------------------------------------------------------------
 
-def _list_window_indices(session: str) -> list[int]:
+def _list_pane_ids(session: str) -> list[str]:
+    """All pane ids (e.g. `%7`) across every window of the session."""
     res = _run(
-        ["tmux", "list-windows", "-t", session, "-F", "#{window_index}"],
+        ["tmux", "list-panes", "-s", "-t", session, "-F", "#{pane_id}"],
         capture=True,
         check=False,
     )
     if res.returncode != 0:
         return []
-    return [int(x) for x in res.stdout.split() if x.strip().isdigit()]
+    return [x for x in res.stdout.split() if x.strip().startswith("%")]
 
 
-def kill_window(window_id: str) -> None:
-    """`tmux kill-window -t <window_id>`. No-op if the window is gone.
+def _retile_agents_window(session: str) -> None:
+    """Rebalance the shared agents window to a tiled grid (best effort)."""
+    win = _agents_window_target(session)
+    if win is not None:
+        _run(["tmux", "select-layout", "-t", win, "tiled"], check=False)
 
-    `window_id` can be `harness:1` or just `1` (which is interpreted under
-    the default session). Accepts both forms.
+
+def kill_pane(pane_id: str) -> None:
+    """`tmux kill-pane -t <pane_id>`. No-op if the pane is gone.
+
+    `pane_id` is a tmux pane id such as `%7` (globally unique, what
+    `provision_worker` returns). Killing the last pane in the shared agents
+    window also closes that window — which is fine; it's recreated on the next
+    spawn. Surviving panes are re-tiled so the layout stays balanced.
     """
-    target = window_id if ":" in window_id else f"{_session_name()}:{window_id}"
-    _run(["tmux", "kill-window", "-t", target], check=False)
+    _run(["tmux", "kill-pane", "-t", pane_id], check=False)
+    _retile_agents_window(_session_name())
 
 
 # ---------------------------------------------------------------------------
 # Worker spawn
 # ---------------------------------------------------------------------------
+
+def _open_agent_pane(session: str, pane_title: str) -> str:
+    """Open an idle placeholder pane in the shared agents window; return its id.
+
+    First agent: create the agents window (its first pane). Later agents:
+    `split-window` a new pane into that window, then re-tile so all panes stay
+    balanced and visible. Either way the pane runs `PLACEHOLDER_CMD` until
+    `launch_worker` respawns it. Pane titles are shown in the pane border (set
+    once on the window) so each agent is labelled in the shared view.
+    """
+    win = _agents_window_target(session)
+    if win is None:
+        cmd = [
+            "tmux", "new-window",
+            "-t", session, "-n", _agents_window_name(),
+            "-P", "-F", "#{pane_id}",
+            PLACEHOLDER_CMD,
+        ]
+        pane_id = _run(cmd, capture=True).stdout.strip()
+        win = _agents_window_target(session) or f"{session}:{_agents_window_name()}"
+        # Show per-pane titles in the border so each agent is labelled.
+        _run(["tmux", "set-option", "-w", "-t", win, "pane-border-status", "top"], check=False)
+    else:
+        cmd = [
+            "tmux", "split-window",
+            "-t", win, "-P", "-F", "#{pane_id}",
+            PLACEHOLDER_CMD,
+        ]
+        pane_id = _run(cmd, capture=True).stdout.strip()
+        _retile_agents_window(session)
+
+    _run(["tmux", "select-pane", "-t", pane_id, "-T", pane_title], check=False)
+    return pane_id
+
 
 def provision_worker(
     *,
@@ -299,8 +373,7 @@ def provision_worker(
     base_branch: str | None = None,
     repo_root: str | os.PathLike | None = None,
     session: str | None = None,
-    window: int | None = None,
-    window_name: str | None = None,
+    pane_title: str | None = None,
     session_id: str | None = None,
     branch: str | None = None,
     new_branch: bool = True,
@@ -309,11 +382,11 @@ def provision_worker(
     """Phase 1 of spawning: set everything up *except* starting the worker.
 
     Creates the worktree/branch, pre-trusts it, writes the prompt file, and
-    reserves an **idle placeholder** tmux window (running `PLACEHOLDER_CMD`, not
-    claude). The worker is NOT running yet.
+    reserves an **idle placeholder** pane (running `PLACEHOLDER_CMD`, not claude)
+    in the shared agents window. The worker is NOT running yet.
 
     This exists so the orchestrator can do all of its bookkeeping — move the task
-    file to `in-progress/`, set `status: in-progress` + worktree/window/started/
+    file to `in-progress/`, set `status: in-progress` + worktree/pane/started/
     assigned_to, record the worker in `orchestrator-state.yaml` — *before* the
     worker process exists. A worker that is launched into a fully-prepared world
     can never observe a half-set-up task file nor race the orchestrator's writes
@@ -338,26 +411,15 @@ def provision_worker(
     prompt_file = _prompt_dir() / f"{task_id}.{label}.prompt.txt"
     prompt_file.write_text(prompt, encoding="utf-8")
 
-    name = window_name or f"{label}-{task_id}"
-    target = f"{sess}:{window}" if window is not None else sess
-
-    # Reserve the window with an idle hold command. `launch_worker` replaces it.
-    cmd = [
-        "tmux", "new-window",
-        "-t", target,
-        "-n", name,
-        "-P", "-F", "#{window_index}",
-        PLACEHOLDER_CMD,
-    ]
-    res = _run(cmd, capture=True)
-    assigned = int(res.stdout.strip())
+    title = pane_title or f"{label}-{task_id}"
+    pane_id = _open_agent_pane(sess, title)
 
     return {
         "task_id": task_id,
         "session_id": sid,
         "session": sess,
-        "window": assigned,
-        "window_target": f"{sess}:{assigned}",
+        "pane": pane_id,
+        "window_target": _agents_window_target(sess),
         "worktree": str(wt_path),
         "branch": branch,
         "prompt_file": str(prompt_file),
@@ -370,32 +432,32 @@ def launch_worker(
     worktree: str | os.PathLike,
     session_id: str,
     prompt_file: str | os.PathLike,
-    window: int | str,
+    pane: str,
     session: str | None = None,
     model: str | None = None,
 ) -> dict[str, Any]:
-    """Phase 2 of spawning: start the worker in an already-provisioned window.
+    """Phase 2 of spawning: start the worker in an already-provisioned pane.
 
-    `tmux respawn-window -k` kills the placeholder hold command and runs the
+    `tmux respawn-pane -k` kills the placeholder hold command and runs the
     spawn helper (which `exec`s `claude [--model M] --session-id <uuid>
-    "$(cat <prompt>)"`) in the same window index. From here the worker is live.
+    "$(cat <prompt>)"`) in the same pane. From here the worker is live.
 
     `model` is passed to `claude --model` — used to run the Opus fixer as opus;
-    omit (None) to use claude's default. `window` may be an int index or a full
-    `session:index` target.
+    omit (None) to use claude's default. `pane` is the pane id (e.g. `%7`)
+    returned by `provision_worker`; pane ids are global, so no session prefix
+    is needed.
     """
     sess = session or _session_name()
-    target = window if (isinstance(window, str) and ":" in window) else f"{sess}:{window}"
     helper_cmd = f"{SPAWN_HELPER} {worktree!s} {session_id} {prompt_file!s}"
     if model:
         helper_cmd += f" {model}"
     cmd = [
-        "tmux", "respawn-window", "-k",
-        "-t", str(target),
+        "tmux", "respawn-pane", "-k",
+        "-t", str(pane),
         helper_cmd,
     ]
     _run(cmd)
-    return {"session": sess, "window_target": str(target), "launched": True}
+    return {"session": sess, "pane": str(pane), "launched": True}
 
 
 def spawn_worker(
@@ -406,8 +468,7 @@ def spawn_worker(
     base_branch: str | None = None,
     repo_root: str | os.PathLike | None = None,
     session: str | None = None,
-    window: int | None = None,
-    window_name: str | None = None,
+    pane_title: str | None = None,
     session_id: str | None = None,
     branch: str | None = None,
     new_branch: bool = True,
@@ -424,7 +485,7 @@ def spawn_worker(
     Returns:
         {
           "task_id": str, "session_id": str (UUID), "session": str,
-          "window": int, "window_target": str, "worktree": str (abs),
+          "pane": str (e.g. "%7"), "window_target": str, "worktree": str (abs),
           "branch": str, "prompt_file": str, "launched": True,
         }
     """
@@ -435,8 +496,7 @@ def spawn_worker(
         base_branch=base_branch,
         repo_root=repo_root,
         session=session,
-        window=window,
-        window_name=window_name,
+        pane_title=pane_title,
         session_id=session_id,
         branch=branch,
         new_branch=new_branch,
@@ -446,7 +506,7 @@ def spawn_worker(
         worktree=info["worktree"],
         session_id=info["session_id"],
         prompt_file=info["prompt_file"],
-        window=info["window"],
+        pane=info["pane"],
         session=info["session"],
         model=model,
     )
@@ -458,14 +518,21 @@ def spawn_worker(
 # Mid-session nudges
 # ---------------------------------------------------------------------------
 
-def send_nudge(window_id: str, text: str, *, submit: bool = True) -> None:
-    """Deliver `text` to the given window's active pane.
+def send_nudge(target_id: str, text: str, *, submit: bool = True) -> None:
+    """Deliver `text` to the given agent's pane.
+
+    `target_id` is normally a pane id (e.g. `%7`), which tmux accepts as a
+    target directly. A `session:window` form is also accepted, and a bare
+    window index is interpreted under the default session.
 
     Long or multiline text goes through `tmux load-buffer` + `paste-buffer`
     (bracketed paste, handles any chars). Short single-line text goes via
     `send-keys -l` (literal). Always followed by Enter unless submit=False.
     """
-    target = window_id if ":" in window_id else f"{_session_name()}:{window_id}"
+    if target_id.startswith("%") or ":" in target_id:
+        target = target_id
+    else:
+        target = f"{_session_name()}:{target_id}"
 
     if "\n" in text or len(text) > NUDGE_LITERAL_MAX:
         # paste-buffer path
@@ -511,43 +578,42 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument("--base-branch", default=None, help="Branch to cut the worktree from (default: repo's current branch, or $HARNESS_BASE_BRANCH)")
         p.add_argument("--repo-root", default=None, help="Repo to spawn the worktree from (default: cwd)")
         p.add_argument("--session", default=None)
-        p.add_argument("--window", type=int, default=None, help="Target window index (default: tmux auto-assigns)")
         p.add_argument("--session-id", default=None, help="Pre-allocated claude --session-id UUID (default: generate one)")
         p.add_argument("--branch", default=None, help="Branch name (default: task/<task-id>)")
         p.add_argument("--existing-branch", action="store_true", help="Check out an existing branch instead of creating one (QA / Opus fixer on the worker's PR branch)")
-        p.add_argument("--label", default="worker", help="Agent kind: names the window + prompt file + default worktree (worker|qa|fixer)")
+        p.add_argument("--label", default="worker", help="Agent kind: titles the pane + names the prompt file + default worktree (worker|qa|fixer)")
         p.add_argument("--model", default=None, help="claude --model for the spawned agent (e.g. opus for the fixer); spawn-worker only")
 
     p_spawn = sub.add_parser("spawn-worker", help="Provision + launch a worker in one call (worker starts immediately)")
     _add_provision_args(p_spawn)
 
-    p_prov = sub.add_parser("provision-worker", help="Phase 1: create worktree + reserve an idle window, but do NOT start the worker")
+    p_prov = sub.add_parser("provision-worker", help="Phase 1: create worktree + reserve an idle pane in the agents window, but do NOT start the worker")
     _add_provision_args(p_prov)
 
-    p_launch = sub.add_parser("launch-worker", help="Phase 2: start the worker in an already-provisioned window")
+    p_launch = sub.add_parser("launch-worker", help="Phase 2: start the worker in an already-provisioned pane")
     p_launch.add_argument("--worktree", required=True, help="Worktree path returned by provision-worker")
     p_launch.add_argument("--session-id", required=True, help="session-id returned by provision-worker")
     p_launch.add_argument("--prompt-file", required=True, help="prompt_file returned by provision-worker")
-    p_launch.add_argument("--window", required=True, help="Window index (or session:index) returned by provision-worker")
+    p_launch.add_argument("--pane", required=True, help="Pane id (e.g. '%7') returned by provision-worker")
     p_launch.add_argument("--session", default=None)
     p_launch.add_argument("--model", default=None, help="claude --model for the spawned agent (e.g. opus for the QA-fail fixer)")
 
-    p_nudge = sub.add_parser("nudge", help="Send text to a running worker window")
-    p_nudge.add_argument("--window", required=True, help="window-id (e.g. '1' or 'harness:1')")
+    p_nudge = sub.add_parser("nudge", help="Send text to a running agent's pane")
+    p_nudge.add_argument("--pane", required=True, help="Pane id (e.g. '%7') of the target agent")
     g_text = p_nudge.add_mutually_exclusive_group(required=True)
     g_text.add_argument("--text", help="Text to send")
     g_text.add_argument("--text-file", help="File containing text to send")
     p_nudge.add_argument("--no-submit", action="store_true", help="Don't press Enter after typing")
 
-    p_kill = sub.add_parser("kill-window", help="Kill a tmux window")
-    p_kill.add_argument("--window", required=True)
+    p_kill = sub.add_parser("kill-pane", help="Kill an agent's tmux pane")
+    p_kill.add_argument("--pane", required=True, help="Pane id (e.g. '%7')")
 
     p_rmwt = sub.add_parser("remove-worktree", help="git worktree remove")
     p_rmwt.add_argument("--path", required=True)
     p_rmwt.add_argument("--force", action="store_true")
 
     sub.add_parser("ensure-session", help="Create the harness session if missing")
-    sub.add_parser("list-windows", help="List window indices in the harness session")
+    sub.add_parser("list-panes", help="List live agent pane ids in the harness session")
 
     return parser
 
@@ -565,7 +631,6 @@ def main(argv: list[str] | None = None) -> int:
             base_branch=args.base_branch,
             repo_root=args.repo_root,
             session=args.session,
-            window=args.window,
             session_id=args.session_id,
             branch=args.branch,
             new_branch=not args.existing_branch,
@@ -583,7 +648,7 @@ def main(argv: list[str] | None = None) -> int:
             worktree=args.worktree,
             session_id=args.session_id,
             prompt_file=args.prompt_file,
-            window=args.window,
+            pane=args.pane,
             session=args.session,
             model=args.model,
         )
@@ -593,11 +658,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "nudge":
         text = args.text if args.text is not None else Path(args.text_file).read_text(encoding="utf-8")
-        send_nudge(args.window, text, submit=not args.no_submit)
+        send_nudge(args.pane, text, submit=not args.no_submit)
         return 0
 
-    if args.cmd == "kill-window":
-        kill_window(args.window)
+    if args.cmd == "kill-pane":
+        kill_pane(args.pane)
         return 0
 
     if args.cmd == "remove-worktree":
@@ -608,9 +673,9 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(ensure_session() + "\n")
         return 0
 
-    if args.cmd == "list-windows":
-        for idx in _list_window_indices(_session_name()):
-            sys.stdout.write(f"{idx}\n")
+    if args.cmd == "list-panes":
+        for pid in _list_pane_ids(_session_name()):
+            sys.stdout.write(f"{pid}\n")
         return 0
 
     return 1

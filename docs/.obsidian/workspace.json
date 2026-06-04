@@ -4,21 +4,17 @@
     "type": "split",
     "children": [
       {
-        "id": "6cbc60a71dbb232c",
+        "id": "d974144fe068fec0",
         "type": "tabs",
         "children": [
           {
-            "id": "5b48f0c93d6f8d17",
+            "id": "49ba9fd2f410a666",
             "type": "leaf",
             "state": {
-              "type": "markdown",
-              "state": {
-                "file": "09-onboarding/build-guide.md",
-                "mode": "source",
-                "source": false
-              },
+              "type": "empty",
+              "state": {},
               "icon": "lucide-file",
-              "title": "build-guide"
+              "title": "New tab"
             }
           }
         ]
@@ -185,16 +181,28 @@
       "obsidian-excalidraw-plugin:New drawing": false
     }
   },
-  "active": "5b48f0c93d6f8d17",
+  "active": "49ba9fd2f410a666",
   "lastOpenFiles": [
-    "_kanban/bugs.md",
+    "08-architecture/file-system.md",
+    "09-onboarding/handoff-qa-verify-e2e.md",
+    "10-product/README.md",
+    "09-onboarding/doc-maintenance.md",
     "09-onboarding/build-guide.md",
+    "active-features",
+    "adrs",
+    "specs/_template.md",
+    "specs",
+    "02-adrs/ADR-002-conda-env-for-wrappers.md",
+    "02-adrs/ADR-001-control-plane-vs-committed-files.md",
+    "09-onboarding/harness-test-playbook.md",
+    "09-onboarding/build-roadmap.md",
+    "09-onboarding/build-progress.md",
+    "_kanban/bugs.md",
     "_kanban/features.md",
     "08-architecture/orchestrator-design.md",
     "08-architecture/file-system.md.tmp.88287.f47b7be65dab",
     "11-misc/README.md",
     "10-product/_prd-template.md",
-    "10-product/README.md",
     "11-misc/wireframes",
     "11-misc/screenshots",
     "11-misc/flows",
@@ -204,17 +212,12 @@
     "03-tasks/README.md",
     "02-adrs/_template.md",
     "01-specs/_template.md",
-    "09-onboarding/doc-maintenance.md",
     "09-onboarding/setup-guide.md",
     "08-architecture/feature-lifecycle.md",
-    "08-architecture/file-system.md",
     "08-architecture/agent-map.md",
     "feature-lifecycle.md",
     "09-onboarding/README.md",
     "Welcome.md",
-    "_kanban",
-    "09-onboarding",
-    "08-architecture/diagrams",
-    "08-architecture"
+    "_kanban"
   ]
 }

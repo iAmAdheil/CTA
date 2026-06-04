@@ -164,14 +164,16 @@ docs/
 active_workers:
   - task_id: TASK-051
     worktree: ../project-export-core
-    window: 1
+    pane: "%7"             # pane id in the shared agents window
     started: "2026-05-27T14:30:00"
     model: sonnet
+    role: worker
   - task_id: TASK-053
     worktree: ../project-export-ui
-    window: 2
+    pane: "%9"
     started: "2026-05-27T14:35:00"
     model: sonnet
+    role: worker
 
 max_workers: 3
 
@@ -203,7 +205,7 @@ assigned_to: null        # orchestrator fills this
 model: sonnet
 linear_id: "LIN-51"
 worktree: null           # orchestrator fills this when starting
-window: null             # orchestrator fills this when starting
+pane: null               # orchestrator fills this when starting (tmux pane id, e.g. "%7")
 started: null
 pr_url: null
 pr_number: null

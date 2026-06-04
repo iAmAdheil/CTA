@@ -16,7 +16,7 @@ properties:
     items:
       type: object
       additionalProperties: false
-      required: [task_id, worktree, window, started, model]
+      required: [task_id, worktree, pane, started, model]
       properties:
         task_id:
           type: string
@@ -24,16 +24,20 @@ properties:
         worktree:
           type: string
           description: Path (absolute or relative to project root) of the git worktree.
-        window:
-          type: integer
-          minimum: 0
-          description: tmux window index.
+        pane:
+          type: string
+          pattern: "^%[0-9]+$"
+          description: tmux pane id (e.g. "%7") of the agent's pane in the shared agents window.
         started:
           type: string
           format: date-time
         model:
           type: string
           enum: [sonnet, opus, haiku]
+        role:
+          type: string
+          enum: [worker, qa, fixer]
+          description: Tracked-agent kind acting on the task (worker | qa | fixer).
 
   max_workers:
     type: integer

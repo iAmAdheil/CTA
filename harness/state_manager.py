@@ -108,7 +108,7 @@ def add_worker(
     *,
     task_id: str,
     worktree: str,
-    window: int,
+    pane: str,
     started: str,
     model: str,
     role: str = "worker",
@@ -130,7 +130,7 @@ def add_worker(
     workers.append({
         "task_id": task_id,
         "worktree": worktree,
-        "window": window,
+        "pane": pane,
         "started": started,
         "model": model,
         "role": role,
@@ -317,7 +317,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_add = sub.add_parser("add-worker", help="Add a worker to active_workers")
     p_add.add_argument("--task-id", required=True)
     p_add.add_argument("--worktree", required=True)
-    p_add.add_argument("--window", required=True, type=int)
+    p_add.add_argument("--pane", required=True, help="tmux pane id (e.g. '%7') returned by provision-worker")
     p_add.add_argument("--started", required=True, help="ISO-8601 timestamp")
     p_add.add_argument("--model", required=True, choices=["sonnet", "opus", "haiku"])
     p_add.add_argument("--role", default="worker", choices=["worker", "qa", "fixer"], help="Tracked-agent kind (default: worker)")
@@ -374,7 +374,7 @@ def main(argv: list[str] | None = None) -> int:
         add_worker(
             task_id=args.task_id,
             worktree=args.worktree,
-            window=args.window,
+            pane=args.pane,
             started=args.started,
             model=args.model,
             role=args.role,

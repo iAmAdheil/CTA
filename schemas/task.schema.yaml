@@ -123,9 +123,9 @@ properties:
     type: [string, "null"]
     description: Path to the git worktree the worker is using.
 
-  window:
-    type: [integer, "null"]
-    description: tmux window index assigned to this task.
+  pane:
+    type: [string, "null"]
+    description: tmux pane id (e.g. "%7") assigned to this task's agent in the shared agents window.
 
   started:
     type: [string, "null"]
@@ -145,6 +145,15 @@ properties:
       Verdict-ladder pass counter (the ladder is ONE retry, not 3 strikes).
       0 = first QA pass; 1 = re-QA after one Opus fix. On the 2nd pass anything
       but looks-good escalates — there is no count >= 2 in normal operation.
+
+  qa_verify_injected:
+    type: boolean
+    description: >
+      TEST SCAFFOLD ONLY (HARNESS_QA_VERIFY). Set true by the orchestrator once it
+      has injected a deliberate behavioral bug into this task's branch (step 4S), so
+      the injection happens exactly once and survives a crash/replay. Never set in
+      normal operation — the hook is for verifying that real behavioral QA catches
+      defects and the Opus fix loop heals them. See the orchestrator skill, step 4S.
 
   qa_out_of_scope_bugs:
     type: array

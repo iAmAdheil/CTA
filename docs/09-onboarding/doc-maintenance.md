@@ -167,7 +167,7 @@ TASK CREATED
 AGENT WORKING
   └─→ 04-active-features/{feature}/progress.md (worker writes)
   └─→ 04-active-features/{feature}/decisions.md (micro-decisions)
-  └─→ Telegram: "🔧 TASK-NNN started on window:N"
+  └─→ Telegram: "🔧 TASK-NNN started on pane %7"
 
 PR OPENED
   └─→ _kanban: card → "QA"
@@ -220,7 +220,7 @@ The kanban in `_kanban/features.md` is **for you**, not for agents. It's navigat
 - [ ] [[feature-data-export]] — spec approved, tasks not yet created
 
 ## In Progress
-- [ ] [[feature-oauth]] — TASK-039, worker on window:2
+- [ ] [[feature-oauth]] — TASK-039, worker on pane %7
 
 ## QA
 - [ ] [[feature-pdf-export]] — PR #84, QA running

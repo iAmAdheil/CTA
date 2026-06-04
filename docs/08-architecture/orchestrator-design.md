@@ -49,9 +49,9 @@ cycle 52: qa-report-TASK-051.md verdict looks-good → set qa-passed, board → 
 | Event (file change) | Action taken |
 |---|---|
 | New file in `01-specs/` with `status: approved` | Invoke Task Breakdown Agent |
-| Task file status → `in-progress` (set by orchestrator) | Spawn worker in new worktree + window |
+| Task file status → `in-progress` (set by orchestrator) | Spawn worker in new worktree + a pane in the shared agents window |
 | `progress.md` contains BLOCKER section | Check if answerable from docs; if not, invoke Opus |
-| Task file status → `pr-opened` (set by worker) | Tear down worker window + worktree, spawn **async QA agent** (own worktree on `task/<id>`). Review agent is a later, separate addition. |
+| Task file status → `pr-opened` (set by worker) | Tear down worker pane + worktree, spawn **async QA agent** (own worktree on `task/<id>`). Review agent is a later, separate addition. |
 | Task file status → `pr-updated` (set by Opus fixer) | Trigger QA again (re-QA) on the same branch |
 | `qa-report-<ID>.md` verdict — `looks-good` | Set task `qa-passed`, board → Human Review, notify you |
 | `qa-report-<ID>.md` verdict — `needs-changes` | Set `qa-failed`, spawn **Opus fixer** on the same task (pushes to existing `branch:`, sets `pr-updated`) |
@@ -94,7 +94,7 @@ Linear API calls and Telegram messages are **side effects of state transitions**
 ```
 TASK STARTS
   orchestrator reads TASK-051.yaml
-  → spins up worker agent on window:1
+  → spins up worker agent in a pane (%7) of the shared agents window
   → Linear: LIN-51 → "In Progress"         ← side effect
   → Telegram: "🔧 LIN-51 started"           ← side effect
   → writes orchestrator-state.yaml
@@ -135,11 +135,11 @@ else:
 
 Workers are spun up with:
 1. `git worktree add {path} {branch}`
-2. `tmux new-window -t main`
-3. Claude Code started in the new window with the task handoff prompt
+2. `tmux split-window` into the shared `agents` window (the first agent creates the window) — its pane id (e.g. `%7`) is the worker's durable identity
+3. Claude Code started in that pane with the task handoff prompt
 
 Workers are torn down when they signal `pr-opened`:
-1. `tmux kill-window -t main:{window}`
+1. `tmux kill-pane -t {pane}` (killing the last pane closes the agents window; it's recreated on the next spawn)
 2. `git worktree remove {path}` (the `task/<id>` branch + open PR survive)
 3. Remove from `active_workers` in state
 

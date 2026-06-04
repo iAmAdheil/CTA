@@ -6,15 +6,18 @@ All agents in the system, their roles, models, and concurrency constraints.
 
 ## tmux Layout at Peak Load
 
+The orchestrator keeps its own window 0. Every *spawned* agent (worker, QA, fixer, the shared-slot agents) is a **pane** in a single shared window named `agents` — each pane identified by its durable tmux pane ID (e.g. `%7`), never a window index.
+
 ```
-window 0  — Orchestrator          (always running)
-window 1  — Worker: TASK-NNN      (feature/branch-a)
-window 2  — Worker: TASK-NNN      (feature/branch-b)
-window 3  — Worker: TASK-NNN      (feature/branch-c)
-window 4  — QA Agent              (current PR)
-window 5  — Review Agent          (same PR, parallel to QA)
-window 6  — Shared slot           (Opus / Task Breakdown / Doc Closeout)
-window 7  — Monitor               (live state, logs, cost)
+window 0  — Orchestrator                        (always running)
+window "agents" — all spawned agents share this one window as panes:
+    pane %1  — Worker: TASK-NNN      (feature/branch-a)
+    pane %2  — Worker: TASK-NNN      (feature/branch-b)
+    pane %3  — Worker: TASK-NNN      (feature/branch-c)
+    pane %4  — QA Agent              (current PR)
+    pane %5  — Review Agent          (same PR, parallel to QA)
+    pane %6  — Shared slot           (Opus / Task Breakdown / Doc Closeout)
+window 7  — Monitor                              (live state, logs, cost)
 ```
 
 ---
@@ -35,7 +38,7 @@ window 7  — Monitor               (live state, logs, cost)
 ## Up to 3–4 Simultaneously
 
 ### Worker Agents
-- **Windows:** 1, 2, 3 (up to max_workers)
+- **Panes:** up to max_workers panes in the shared `agents` window, each with its own pane ID (`%1`, `%2`, `%3`, …)
 - **Model:** Sonnet (Haiku for trivial tasks: copy changes, config tweaks)
 - **Concurrent:** Max 3–4 (configurable in `orchestrator-state.yaml`)
 - **Role:** Execute a single task end-to-end. Read spec + task file + CLAUDE.md. Write code. Open PR. Signal done.
@@ -69,9 +72,9 @@ window 7  — Monitor               (live state, logs, cost)
 
 ---
 
-## On Demand, Short-Lived (Shared Slot — Window 6)
+## On Demand, Short-Lived (Shared Slot)
 
-These never run simultaneously. The orchestrator queues them into the same window.
+These never run simultaneously. The orchestrator queues them into a single reused pane in the shared `agents` window.
 
 ### Task Breakdown Agent
 - **Model:** Sonnet
@@ -103,7 +106,7 @@ These never run simultaneously. The orchestrator queues them into the same windo
 
 ### Backlog Triage Agent
 - **Model:** Opus
-- **Window:** 6 (shared slot, run at 6am daily)
+- **Pane:** the shared-slot pane in the `agents` window (run at 6am daily)
 - **Role:** Re-prioritize the backlog. Read all backlog tasks, current Linear state, recent decisions. Reorder task priority fields. Post daily plan to Telegram.
 - **Inputs:** All `tasks/backlog/*.yaml`, Linear state, recent `decisions.md` entries
 - **Outputs:** Updated priority fields on task files, Telegram daily plan message
@@ -116,7 +119,7 @@ These never run simultaneously. The orchestrator queues them into the same windo
 - Two QA agents (sequential — one PR at a time)
 - Two Opus invocations (orchestrator queues them if two blockers hit at once)
 - Task Breakdown + workers on the same feature (breakdown must complete before workers start)
-- Two agents in the shared slot (window 6 is a single-occupancy slot)
+- Two agents in the shared slot (the shared-slot pane is single-occupancy)
 
 ---
 
