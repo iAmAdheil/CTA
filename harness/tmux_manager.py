@@ -304,6 +304,162 @@ def remove_worktree(path: str | os.PathLike, *, force: bool = False) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Branch management (feature integration branch)
+# ---------------------------------------------------------------------------
+#
+# The harness gives each spec a `feature/<spec-id>` integration branch. Every
+# task is cut from it and PRs back into it; when a task passes QA the
+# orchestrator merges its branch into the feature branch (`merge_branch`) and
+# marks the task done. The human's only merge is feature/<spec-id> -> the
+# release branch — which the agent is hard-guarded against doing here.
+
+
+def _git(args: list[str], repo_root: str | os.PathLike | None = None) -> subprocess.CompletedProcess:
+    cwd = str(repo_root) if repo_root else None
+    return subprocess.run(["git", *args], cwd=cwd, text=True, capture_output=True)
+
+
+def _branch_exists(name: str, repo_root: str | os.PathLike | None = None) -> bool:
+    return _git(["rev-parse", "--verify", "--quiet", f"refs/heads/{name}"], repo_root).returncode == 0
+
+
+def release_branch(repo_root: str | os.PathLike | None = None) -> str:
+    """The repo's release/default branch — the one the agent must NOT merge into.
+
+    Detection: `origin/HEAD` symbolic-ref (what the remote calls default) >
+    a local `main` > a local `master` > DEFAULT_BASE_BRANCH. This is distinct
+    from `resolve_base_branch`, which returns the *current* branch (a feature
+    branch while a spec is in flight) — here we specifically want the release
+    branch so `merge_branch` can refuse to touch it.
+    """
+    res = _git(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], repo_root)
+    if res.returncode == 0 and res.stdout.strip():
+        # e.g. "refs/remotes/origin/main" -> "main"
+        return res.stdout.strip().rsplit("/", 1)[-1]
+    for cand in ("main", "master"):
+        if _branch_exists(cand, repo_root):
+            return cand
+    return DEFAULT_BASE_BRANCH
+
+
+def ensure_branch(
+    name: str,
+    base: str | None = None,
+    *,
+    checkout: bool = False,
+    repo_root: str | os.PathLike | None = None,
+) -> dict[str, Any]:
+    """Ensure branch `name` exists, created from `base`. Idempotent.
+
+    Used to create `feature/<spec-id>` at breakdown. `base` defaults to the
+    repo's **release branch** (`release_branch()` — main/master), which is the
+    right base for a feature branch regardless of what the orchestrator currently
+    has checked out (e.g. a previous, not-yet-merged feature branch). With
+    `checkout=True` the repo's working tree is switched to it (the orchestrator
+    runs on the feature branch for the spec's duration, so the spec commit lands
+    there and workers base onto it). If the branch already exists this only
+    (optionally) checks it out — it never moves the branch.
+
+    Returns {"branch", "created", "checked_out", "base"}.
+    """
+    base = base or release_branch(repo_root)
+    existed = _branch_exists(name, repo_root)
+    created = False
+    if not existed:
+        res = _git(["branch", name, base], repo_root)
+        if res.returncode != 0:
+            raise RuntimeError(f"git branch {name} {base} failed: {res.stderr.strip()}")
+        created = True
+    checked_out = False
+    if checkout:
+        res = _git(["checkout", name], repo_root)
+        if res.returncode != 0:
+            raise RuntimeError(f"git checkout {name} failed: {res.stderr.strip()}")
+        checked_out = True
+    return {"branch": name, "created": created, "checked_out": checked_out, "base": base}
+
+
+def merge_branch(
+    *,
+    into: str,
+    frm: str,
+    pr_number: int | None = None,
+    repo_root: str | os.PathLike | None = None,
+    push: bool = False,
+) -> dict[str, Any]:
+    """Merge branch `frm` (a task/<id> branch) into `into` (feature/<spec-id>).
+
+    This is the orchestrator's QA-pass integration step. It is **hard-guarded
+    against merging into the release branch** (main/master/origin's default):
+    that merge is the human's alone. On a merge conflict it aborts cleanly and
+    reports it (the orchestrator then escalates the task to the human) — it
+    never leaves the working tree in a half-merged state.
+
+    Mechanism:
+      - If `pr_number` is given AND a remote + `gh` are available, merge via
+        `gh pr merge <n> --merge` (so the GitHub PR is marked merged), then
+        fast-forward the local `into` branch to match.
+      - Otherwise (local-marker mode / no remote), check out `into` and
+        `git merge --no-ff <frm>` locally.
+
+    Returns {"merged": bool, "conflict": bool, "refused": bool, "via": str,
+    "reason": str}.
+    """
+    result = {"merged": False, "conflict": False, "refused": False, "via": "", "reason": ""}
+
+    rel = release_branch(repo_root)
+    if into in {"main", "master"} or into == rel:
+        result["refused"] = True
+        result["reason"] = (
+            f"refusing to merge into release branch {into!r} — the agent only "
+            f"integrates into a feature branch; merging to {rel!r} is the human's gate"
+        )
+        return result
+
+    have_remote = bool(_git(["remote"], repo_root).stdout.strip())
+    have_gh = shutil.which("gh") is not None
+
+    if pr_number is not None and have_remote and have_gh:
+        res = subprocess.run(
+            ["gh", "pr", "merge", str(pr_number), "--merge"],
+            cwd=str(repo_root) if repo_root else None, text=True, capture_output=True,
+        )
+        if res.returncode != 0:
+            result["reason"] = f"gh pr merge #{pr_number} failed: {res.stderr.strip()}"
+            # A blocked/conflicting PR reports here; treat as conflict for routing.
+            result["conflict"] = True
+            return result
+        # Sync the local feature branch so worktrees cut from it locally see the merge.
+        _git(["fetch", "origin", into], repo_root)
+        _git(["checkout", into], repo_root)
+        ff = _git(["merge", "--ff-only", f"origin/{into}"], repo_root)
+        result["merged"] = True
+        result["via"] = "gh"
+        if ff.returncode != 0:
+            result["reason"] = f"merged on GitHub; local ff-sync warning: {ff.stderr.strip()}"
+        return result
+
+    # Local merge path.
+    co = _git(["checkout", into], repo_root)
+    if co.returncode != 0:
+        result["reason"] = f"git checkout {into} failed: {co.stderr.strip()}"
+        return result
+    msg = f"Merge {frm} into {into}"
+    res = _git(["merge", "--no-ff", "-m", msg, frm], repo_root)
+    if res.returncode != 0:
+        # Conflict (or other failure): abort so the tree is left clean.
+        _git(["merge", "--abort"], repo_root)
+        result["conflict"] = True
+        result["reason"] = f"git merge {frm} -> {into} failed: {res.stderr.strip() or res.stdout.strip()}"
+        return result
+    result["merged"] = True
+    result["via"] = "local"
+    if push and have_remote:
+        _git(["push", "origin", into], repo_root)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Pane management
 # ---------------------------------------------------------------------------
 
@@ -623,6 +779,19 @@ def _build_parser() -> argparse.ArgumentParser:
     p_rmwt.add_argument("--path", required=True)
     p_rmwt.add_argument("--force", action="store_true")
 
+    p_ensb = sub.add_parser("ensure-branch", help="Create a branch from a base if missing (idempotent); e.g. the per-spec feature branch")
+    p_ensb.add_argument("--name", required=True, help="Branch to ensure (e.g. feature/<spec-id>)")
+    p_ensb.add_argument("--base", default=None, help="Branch to create it from (default: the repo's release branch — main/master)")
+    p_ensb.add_argument("--checkout", action="store_true", help="Also check it out in the working tree")
+    p_ensb.add_argument("--repo-root", default=None, help="Repo to operate in (default: cwd)")
+
+    p_mrg = sub.add_parser("merge-branch", help="Merge a task branch INTO the feature branch (QA-pass integration). Refuses to merge into the release branch.")
+    p_mrg.add_argument("--into", required=True, help="Target branch (the feature/<spec-id> integration branch)")
+    p_mrg.add_argument("--from", dest="frm", required=True, help="Source branch (task/<id>)")
+    p_mrg.add_argument("--pr-number", type=int, default=None, help="PR number — when set and a remote+gh exist, merge via `gh pr merge` so the PR is marked merged")
+    p_mrg.add_argument("--push", action="store_true", help="Push the feature branch after a local merge (when a remote exists)")
+    p_mrg.add_argument("--repo-root", default=None, help="Repo to operate in (default: cwd)")
+
     sub.add_parser("ensure-session", help="Create the harness session if missing")
     sub.add_parser("list-panes", help="List live agent pane ids in the harness session")
 
@@ -679,6 +848,25 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "remove-worktree":
         remove_worktree(args.path, force=args.force)
         return 0
+
+    if args.cmd == "ensure-branch":
+        info = ensure_branch(
+            args.name, args.base, checkout=args.checkout, repo_root=args.repo_root
+        )
+        json.dump(info, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return 0
+
+    if args.cmd == "merge-branch":
+        info = merge_branch(
+            into=args.into, frm=args.frm, pr_number=args.pr_number,
+            repo_root=args.repo_root, push=args.push,
+        )
+        json.dump(info, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        # Non-zero exit on a non-merge so the orchestrator can branch on $? too,
+        # but the JSON (refused/conflict/merged) is the authoritative signal.
+        return 0 if info.get("merged") else 1
 
     if args.cmd == "ensure-session":
         sys.stdout.write(ensure_session() + "\n")

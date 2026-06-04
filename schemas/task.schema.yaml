@@ -91,6 +91,20 @@ properties:
       fix-mode signal: a fresh task (empty) creates the branch + gh pr create;
       a qa-failed task (filled) means fix mode — push to this branch, no new PR.
 
+  pr_base:
+    type: [string, "null"]
+    description: >
+      The branch this task's PR targets, written by the orchestrator at spawn
+      time (the worker passes it to `gh pr create --base`). Null/empty means the
+      repo default branch (back-compat). Under the feature-branch model it is the
+      per-spec integration branch `feature/<spec-id>`: every task in a spec is
+      cut from that branch and PRs back into it. When QA passes, the orchestrator
+      merges the task's PR into feature/<spec-id> (setting the task `done`); the
+      feature branch therefore accumulates all completed work, so a dependent —
+      cut from feature/<spec-id> once its parents are `done` — already has their
+      code. The human's only merge is feature/<spec-id> -> default, once the spec
+      is green. The agent merges into the feature branch but never into default.
+
   qa_instructions:
     type: [string, "null"]
     description: >

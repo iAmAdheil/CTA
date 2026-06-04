@@ -86,7 +86,7 @@ Orchestrator then:
 
 ## Stage 4 — Execution (Orchestrator + Workers)
 
-Orchestrator reads the dependency graph. Tasks where all `depends_on` are in `done/` are runnable.
+Orchestrator reads the dependency graph. A task is runnable once every entry in its `depends_on` is **`done`** — which here means the parent's PR has been merged into the feature branch (the orchestrator does this automatically the moment QA passes; see "Feature integration branch" below). It does **not** wait for *you* to merge anything — `done` is reached autonomously. Every task is cut from `feature/<spec-id>`, which carries all completed work, so a dependent already has its parents' code.
 
 For each runnable task (up to `max_workers`):
 
@@ -208,7 +208,7 @@ This is **not** done inline by the orchestrator. A separate merge-detection/arch
 - Archives `04-active-features/{feature}/`; stubs runbooks / updates `06-api/` / `08-architecture/data-model.md` as relevant
 - Telegram: `"✅ LIN-51 merged."`
 
-Once a task is `done`, any tasks whose `depends_on` are now all done become runnable for the next worker slot.
+Note `done` here means **merged into the feature branch** (set by the orchestrator on QA pass), not merged into `master`. Your `master` merge is a separate, spec-level step. So dependents unblock as soon as their parents reach `done` in the feature branch — autonomously, without waiting on you.
 
 ---
 
@@ -243,6 +243,31 @@ concurrently up to `max_workers`. (This reverses the earlier "parallel mode"
 design, where idle slots were filled across features for throughput.)
 
 **Important constraint:** tasks that share files within the same feature must not be marked `can_parallelize_with`. The task breakdown agent enforces this. Parallelism is only safe when tasks work on different parts of the codebase.
+
+---
+
+## Feature integration branch (auto-merge on QA pass)
+
+A dependent now starts when its parent is `done`, where `done` means **merged into the feature branch** — not merged into `master`. The harness gives each spec its own integration branch and lets the orchestrator integrate completed work into it automatically, so downstream tasks flow without you. **The agent merges into the feature branch; it never merges into `master` — that one merge is yours.**
+
+```
+master (or repo default)
+ └─ feature/<spec-id>                     cut from master at breakdown; lives for the whole spec
+      ├─ task/A  ──PR──▶ feature/<spec-id>      (every task is cut from, and PRs into, the feature branch)
+      ├─ task/B  ──PR──▶ feature/<spec-id>      (B deps A; cut from feature AFTER A is merged in, so it has A)
+      ├─ task/C  ──PR──▶ feature/<spec-id>      (C deps B; cut after B is in)
+      └─ task/D  ──PR──▶ feature/<spec-id>      (D deps B AND C — a diamond; cut after both are in)
+```
+
+The model is uniform — there is **no per-dependency branch rooting and no PR stacking**:
+
+- **Every task is cut from `feature/<spec-id>`** and its PR targets `feature/<spec-id>` (`pr_base`). No task branches off another task's branch.
+- **QA passes → the orchestrator merges that task's PR into `feature/<spec-id>` and sets it `done`.** The feature branch therefore always contains every completed task. (On a merge conflict the orchestrator does *not* force it — it sets the task `blocked-escalated` for you.)
+- A dependent is gated on its parents being `done`, so by the time it's cut from the feature branch, every parent's code is already there. **Diamonds need no special handling** — a task with two parents is simply cut once both are `done`; the feature branch carries both.
+
+**Why this is simple:** because the parent is already merged into the feature branch before the child is cut, the child's PR diff is clean from the start (just its own changes) — no stacking, no GitHub retarget, no merge-order discipline for you. You review the cumulative work once and merge `feature/<spec-id>` → `master` when the spec is green. The trade: you don't merge each task PR yourself — QA validates each one behaviorally and it auto-lands in the feature branch; your review is at the feature → `master` gate.
+
+This lives in skill logic — the orchestrator creates `feature/<spec-id>` at breakdown, cuts every worker from it, writes `pr_base`, and merges each task into it on QA pass; the worker uses `pr_base` for `gh pr create --base`. In local-marker mode (no remote) there's no PR, so the orchestrator's "merge into feature" is a local `git merge` and the worker skips the PR.
 
 ---
 

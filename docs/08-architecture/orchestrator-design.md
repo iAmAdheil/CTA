@@ -107,15 +107,20 @@ PR OPENED
   → triggers QA agent
   → writes orchestrator-state.yaml
 
-MERGED (detected by the separate merge/archival agent, not the orchestrator)
-  agent detects the human merged the PR (gh pr view --json state,mergedAt)
-  → sets task status: done
+QA PASSED → MERGED INTO FEATURE (the orchestrator does this itself)
+  orchestrator sees the looks-good verdict
+  → sets task status: qa-passed
+  → merges the task's PR into feature/<spec-id>   ← the only merge the agent does
+      (conflict → status: blocked-escalated, hands to you instead)
+  → sets task status: done   (done == merged into the feature branch)
   → Linear: LIN-51 → "Done"               ← side effect
-  → Telegram: "✅ LIN-51 merged"           ← side effect
-  → triggers Doc Closeout
-  orchestrator (next cycle) sees status: done
-  → archives the task file, checks dependency graph
+  → Telegram: "✅ LIN-51 merged into feature" ← side effect
+  → archives the task file, checks the dependency graph (dependents now unblock)
   → writes orchestrator-state.yaml
+
+FEATURE MERGED INTO MASTER (you, once the whole spec is green)
+  you review feature/<spec-id> and merge it into master manually
+  → the agent never does this merge — it's the release gate
 ```
 
 No separate agent for Linear. No separate agent for Telegram. The orchestrator does it in 4–5 lines per transition.
@@ -193,7 +198,10 @@ max_workers: 3           # hard cap on simultaneous workers
 
 # Orchestrator checks before spawning:
 # 1. len(active_workers) < max_workers
-# 2. All task.depends_on are in tasks/done/
+# 2. Every task.depends_on parent is `done` — i.e. merged into the feature
+#    branch (the orchestrator does this automatically on QA pass, so it is NOT
+#    gated on the human's master merge). See feature-lifecycle.md "Feature
+#    integration branch". state_manager `runnable` computes this across all dirs.
 # 3. The task belongs to the current spec — the harness works one spec at a
 #    time (serial-per-spec), so under normal operation every active worker is
 #    on the same feature. See feature-lifecycle.md "One Spec at a Time".

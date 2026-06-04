@@ -14,6 +14,7 @@ window: null
 started: null
 pr_url: null
 pr_number: null
+pr_base: null            # PR target branch (orchestrator-written); null = repo default. Feature model: feature/<spec-id>
 qa_failure_count: 0
 qa_out_of_scope_bugs: []
 suggested_files_to_read: []

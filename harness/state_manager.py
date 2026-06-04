@@ -176,25 +176,35 @@ def _task_sort_key(task: dict[str, Any]) -> tuple[int, int, str]:
 
 def get_runnable_tasks(
     all_tasks: Iterable[dict[str, Any]],
-    done_task_ids: Iterable[str],
+    satisfied_task_ids: Iterable[str],
 ) -> list[dict[str, Any]]:
     """Return runnable tasks ordered most-critical-first.
 
     A task is runnable iff:
       - status == "backlog"
-      - every id in `depends_on` is in `done_task_ids`
+      - every id in `depends_on` is in `satisfied_task_ids`
+
+    A dependency is **satisfied** once the parent is in the feature integration
+    branch — status `done` (see `SATISFYING_STATUSES`). In the feature-branch
+    model the orchestrator merges a task's PR into feature/<spec> the moment QA
+    passes and sets `done`, so this is NOT gated on the human's merge (that's only
+    feature/<spec> -> master) — `done` is reached autonomously. Every task cuts
+    its branch from feature/<spec>, which carries all `done` parents' code, so a
+    dependent is runnable as soon as its parents are `done`. The caller computes
+    `satisfied_task_ids` from every task dir (a task can be `done` before the
+    archive step moves it to done/).
 
     The result is sorted by `priority` (critical → high → medium → low, with
     unknown/missing priority last), tie-broken by numeric task id. The caller
     can take the first N and trust it's getting the highest-priority work.
     """
-    done = set(done_task_ids)
+    satisfied = set(satisfied_task_ids)
     runnable: list[dict[str, Any]] = []
     for task in all_tasks:
         if task.get("status") != "backlog":
             continue
         deps = task.get("depends_on") or []
-        if all(d in done for d in deps):
+        if all(d in satisfied for d in deps):
             runnable.append(task)
     runnable.sort(key=_task_sort_key)
     return runnable
@@ -248,6 +258,18 @@ def _read_spec_frontmatter(path: Path) -> dict[str, Any]:
 ACTIVE_STATUSES = frozenset({
     "backlog", "in-progress", "pr-opened", "pr-updated", "qa-failed",
 })
+
+# Statuses that mean "this parent's code is in the feature integration branch,
+# so a dependent that cuts its branch from feature/<spec> will have it." That is
+# exactly `done` — which, in the feature-branch model, means the orchestrator has
+# merged the task's PR into feature/<spec> (it does this automatically the moment
+# QA passes; the human's only merge is feature/<spec> -> master). So dependents no
+# longer wait on a *human* merge — `done` is reached autonomously — but they DO
+# wait on the parent actually being in the feature branch. `qa-passed` is NOT
+# enough: a qa-passed task is validated but not yet merged into feature, and the
+# orchestrator spawns workers (step 3) before it processes QA merges (step 4), so
+# gating on qa-passed would let a child cut from feature before its parent landed.
+SATISFYING_STATUSES = frozenset({"done"})
 
 
 def get_next_spec(
@@ -327,7 +349,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_run = sub.add_parser(
         "runnable",
-        help="Print task IDs whose deps are satisfied (reads tasks/backlog/ and tasks/done/)",
+        help="Print backlog task IDs whose deps are all satisfied (every dep is done = merged into the feature branch; scans all task state dirs)",
     )
     p_run.add_argument(
         "--tasks-root",
@@ -389,9 +411,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "runnable":
         tasks_root = Path(args.tasks_root)
         backlog = load_tasks_in(tasks_root / "backlog")
-        done = load_tasks_in(tasks_root / "done")
-        done_ids = [t.get("id") for t in done if t.get("id")]
-        runnable = get_runnable_tasks(backlog, done_ids)
+        # A dependency is satisfied when its parent is `done` (merged into the
+        # feature branch). We scan every state dir and select by status rather
+        # than by location, so a task that's `done` but not yet archived to done/
+        # still counts.
+        all_tasks = (
+            backlog
+            + load_tasks_in(tasks_root / "in-progress")
+            + load_tasks_in(tasks_root / "review")
+            + load_tasks_in(tasks_root / "done")
+        )
+        satisfied_ids = [
+            t.get("id") for t in all_tasks
+            if t.get("id") and t.get("status") in SATISFYING_STATUSES
+        ]
+        runnable = get_runnable_tasks(backlog, satisfied_ids)
         for task in runnable:
             sys.stdout.write(f"{task.get('id')}\n")
         return 0
