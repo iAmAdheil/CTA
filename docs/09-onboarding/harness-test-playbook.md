@@ -33,9 +33,10 @@ this test exposes are tracked in the roadmap and in the memory `harness-worker-r
 
 ## The skills under test
 
-The real `/task-breakdown` and `/worker` skills live (user-scope) at
-`~/.claude/skills/{task-breakdown,worker}/SKILL.md`. As of 2026-05-28 they replaced the original
-test stubs:
+The base harness agent skills are version-controlled in the harness repo at
+`~/agent-harness/skills/<name>/SKILL.md` and installed by `setup.sh` into each project's
+`.claude/skills/` (project-scoped, and **committed** so worker/QA git worktrees can load them).
+The real `/task-breakdown` and `/worker` skills replaced the original test stubs (2026-05-28):
 
 - **`/task-breakdown <spec>`** — reads the spec's acceptance criteria, its referenced ADRs, and
   `CLAUDE.md`, then creates the feature workspace `tasks/<feature>/{backlog,in-progress,review,done}/`
@@ -162,7 +163,7 @@ Small on purpose — it exists so the harness has a real, runnable feature for b
 - Implement only your task's slice; keep the contracts above stable so other tasks' PRs compose.
 - Match existing style; no new heavyweight deps without a reason.
 EOF
-git add CLAUDE.md .gitignore docs/specs/_template.md && git commit -qm "scaffolding: todo-app brief"
+git add CLAUDE.md .gitignore docs/specs/_template.md .claude/skills && git commit -qm "scaffolding: todo-app brief + base agent skills"
 ```
 
 > The DoD above is what the **worker** runs before `pr-opened` and what **QA** drives afterward

@@ -6,7 +6,7 @@ What's left to build, grouped by area. Each box is atomic — one coherent file 
 
 ## Skills — finish the MVH set
 
-These are written in the dedicated skill-creation session and live in `~/.claude/skills/<name>/SKILL.md`.
+These are version-controlled in the harness repo at `skills/<name>/SKILL.md` and installed by `setup.sh` into each project's `.claude/skills/` (project-scoped, committed).
 
 - [x] Write `/orchestrator` skill
 - [x] Write `/task-breakdown` skill (real, AC-aware, dependency-shaping — replaced the test stub 2026-05-28)
@@ -166,7 +166,7 @@ the `qa-report.md` "Out-of-Scope Findings" section is dropped from the QA agent'
 - [ ] Rewrite `build-guide.md` Stage 2  
   Original describes a Python `orchestrator.py` with `while True`. Actual design is LLM agent (skill) + wrappers + external driver.
 - [x] Remove dead `agent-prompts/` symlink from `setup.sh`  
-  Skills moved to `~/.claude/skills/` per the location decision; `setup.sh` now removes any stale symlink instead of creating one.
+  Base agent skills are now version-controlled in the repo's `skills/` and installed by `setup.sh` into `.claude/skills/`; `setup.sh` also removes any stale `agent-prompts` symlink instead of creating one.
 - [ ] Add "running the harness" section to `build-guide.md`  
   Covers `/orchestrator` invocation patterns: manual, `/loop`, cron, file-watcher.
 - [ ] Run `skill-creator` description-optimization on each finished skill  

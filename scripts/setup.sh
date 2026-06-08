@@ -33,11 +33,36 @@ echo "✓ docs/{specs,adrs,active-features}/"
 # ---------------------------------------------------------------------------
 # 3. Remove any stale agent-prompts/ symlink from older setups.
 # ---------------------------------------------------------------------------
-# Skills now live at ~/.claude/skills/ (user scope), so the old project-side
-# symlink into the harness repo is dead. Clean it up if a prior run created it.
+# The base agent skills are installed into .claude/skills/ (section 3b below);
+# the old project-side agent-prompts symlink into the harness repo is dead.
+# Clean it up if a prior run created it.
 if [ -L agent-prompts ]; then
   rm -f agent-prompts
   echo "✓ removed stale agent-prompts/ symlink"
+fi
+
+# ---------------------------------------------------------------------------
+# 3b. .claude/skills/ — install the base harness agent skills into the project
+# ---------------------------------------------------------------------------
+# The harness's core agents (orchestrator, task-breakdown, worker, qa-agent,
+# advisor) are version-controlled in this repo under skills/ and copied into the
+# project's .claude/skills/ so Claude Code loads them as PROJECT-scoped skills.
+# They are tracked (NOT gitignored) on purpose: workers and QA agents run inside
+# git worktrees, which only contain COMMITTED files — so the skills must be
+# committed to be loadable there. Re-copied on every run so skill updates in the
+# harness repo propagate; edit skills in the harness repo's skills/, not here
+# (local edits to .claude/skills/ are overwritten on the next setup run).
+if [ -d "$HARNESS_ROOT/skills" ]; then
+  mkdir -p .claude/skills
+  for skill_dir in "$HARNESS_ROOT"/skills/*/; do
+    name="$(basename "$skill_dir")"
+    rm -rf ".claude/skills/$name"
+    cp -R "$skill_dir" ".claude/skills/$name"
+    echo "✓ .claude/skills/$name (from harness skills/)"
+  done
+  echo "  → commit .claude/skills/ so worker & QA worktrees can load these skills"
+else
+  echo "! harness skills/ missing — base agent skills NOT installed"
 fi
 
 # ---------------------------------------------------------------------------
@@ -224,5 +249,7 @@ fi
 echo
 echo "Done. Next:"
 echo "  - Fill out CLAUDE.md"
+echo "  - Commit the base agent skills:  git add .claude/skills && git commit -m 'harness: base agent skills'"
+echo "    (they must be committed so worker/QA git worktrees can load them)"
 echo "  - Drop a spec into docs/specs/ with 'status: approved' to kick off task breakdown"
 echo "  - Start the orchestrator: bash $HARNESS_ROOT/scripts/run-orchestrator.sh"
