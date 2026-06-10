@@ -4,6 +4,32 @@ Running tracker of known issues and follow-ups. Most urgent at the top.
 
 ---
 
+## 🔴 CRITICAL — A worker that dies before writing a terminal status strands its task at `in-progress` forever
+
+**Status:** open · needs an approach
+**Filed:** 2026-06-10
+**Surfaced by:** portfolio e2e — TASK-003's worker pane (`%8`) died mid-task without ever writing a terminal `status:` (still `in-progress`, no commits). The orchestrator's reconcile (step 7) correctly dropped the dead agent from `active_workers` and kept the worktree, but then **refused to re-spawn**: "Harness will not re-spawn an in-progress task — needs human inspection to re-spawn or escalate." So the task sat at `in-progress` with no agent and no progress, indefinitely.
+
+### Why
+The orchestrator only spawns workers for `backlog` tasks (step 3). An `in-progress` task is assumed to be owned by a live worker. When that worker dies prematurely (crash, OOM, session closed, budget) **before** flipping status to `pr-opened`/`blocked`, nothing owns the task and nothing re-spawns it. There's no retry/heal path for "active task whose agent vanished."
+
+### Impact
+- A single crashed worker permanently stalls its task (and any dependents) with no signal beyond a buried `last_action` note. Looks identical to the other CRITICAL (a silent stall), but the cause is different — here the agent is *gone*, not idling.
+- In this run it cost the whole feature's completion until manually reset.
+
+### Manual recovery that worked (the stopgap)
+Reset the task to a clean `backlog` state and let the orchestrator re-spawn: remove the stale worktree + (empty) branch, move the file back to `backlog/`, null out `assigned_to`/`pane`/`worktree`/`started`, set `status: backlog`. Next cycle spawned a fresh worker that completed and passed QA.
+
+### Candidate approaches (decide later)
+- **Reconcile re-queues orphaned active tasks.** When step 7 finds an `active_workers` entry whose pane is dead AND the task is still `in-progress` (never reached a terminal status), treat it as a crashed attempt: bump an attempt counter, and either re-spawn (move back to `backlog` / re-provision into the retained worktree) or, after N attempts, set `blocked-escalated` for a human. Don't leave it parked silently.
+- **Distinguish "intentionally exited" from "crashed."** A worker that exits cleanly always writes a terminal status first; a pane that dies with status still `in-progress` is a crash. Key the heal path off that.
+- Shares a fix surface with the CRITICAL below (agent lifecycle / self-exit) — design them together.
+
+### Notes
+- Root crash cause for `%8` was not captured (pane already gone; no `-p` transcript). Logging worker stdout/transcripts to a file would make this diagnosable — ties into `orch-run.sh`/`_fmt_stream.py` on the `feature/headed-tmux-orchestrator` branch.
+
+---
+
 ## 🔴 CRITICAL — Finished agents don't self-exit; pipeline stalls without an external loop driver
 
 **Status:** open · needs an approach
