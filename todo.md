@@ -23,17 +23,18 @@ Reset the task to a clean `backlog` state and let the orchestrator re-spawn: rem
 ### Candidate approaches (decide later)
 - **Reconcile re-queues orphaned active tasks.** When step 7 finds an `active_workers` entry whose pane is dead AND the task is still `in-progress` (never reached a terminal status), treat it as a crashed attempt: bump an attempt counter, and either re-spawn (move back to `backlog` / re-provision into the retained worktree) or, after N attempts, set `blocked-escalated` for a human. Don't leave it parked silently.
 - **Distinguish "intentionally exited" from "crashed."** A worker that exits cleanly always writes a terminal status first; a pane that dies with status still `in-progress` is a crash. Key the heal path off that.
-- Shares a fix surface with the CRITICAL below (agent lifecycle / self-exit) — design them together.
+- Shares a fix surface with the issue below (agent lifecycle / self-exit) — design them together. **Note:** the default `/loop` shipped for that issue (approach B, 2026-06-11) does **not** help here — the loop re-runs reconcile (step 7) every interval, but reconcile still refuses to re-spawn an `in-progress` orphan, so the loop merely re-confirms the stall. This still needs the reconcile-re-queue heal path; #1 remains 🔴.
 
 ### Notes
 - Root crash cause for `%8` was not captured (pane already gone; no `-p` transcript). Logging worker stdout/transcripts to a file would make this diagnosable — ties into `orch-run.sh`/`_fmt_stream.py` on the `feature/headed-tmux-orchestrator` branch.
 
 ---
 
-## 🔴 CRITICAL — Finished agents don't self-exit; pipeline stalls without an external loop driver
+## 🟡 MOSTLY RESOLVED — Finished agents don't self-exit; pipeline stalled without an external loop driver
 
-**Status:** open · needs an approach
+**Status:** cadence half RESOLVED 2026-06-11 (approach **B** shipped) · root-cause self-exit (**A**) still open, now minor
 **Filed:** 2026-06-10
+**Update (2026-06-11):** `scripts/harness-up.sh` now defaults `HARNESS_ORCH_LOOP=60s`, so the standard headed launch self-drives `/loop 60s /orchestrator` out of the box — approach **B**. The "no driver → looks hung forever" failure mode is gone: a finished worker is now reaped within ≤1 loop interval. Validated on the `harness-dummy` todo-app run — TASK-001 auto-progressed build→PR→QA→merge→`done` with no manual ticking. What remains is cosmetic: a finished agent still doesn't self-terminate (approach **A**), so it holds its pane + concurrency slot for up to one interval before the next cycle reaps it. Downgraded 🔴→🟡.
 **Surfaced by:** portfolio e2e — orchestrator broke down a spec and spawned the TASK-001 worker, the worker completed successfully (`status: pr-opened`, code committed), but the whole thing *looked hung* and went no further.
 
 ### Symptom
@@ -52,11 +53,11 @@ So: a completed worker is immortal until a *subsequent* orchestrator cycle reaps
 
 ### Candidate approaches (decide later — not yet chosen)
 - **A. Agents self-terminate on terminal status.** After writing `status: pr-opened`/`blocked`/etc., the agent should quit (e.g. end the session / `/exit`), so its pane dies and the orchestrator's reconcile (step 7) + teardown sees a dead pane and frees the slot. Keeps panes headed/attachable *while working*, but they don't linger. Need to confirm a clean programmatic exit path for a headed session, or run workers via `-p` and tee their transcript to a log/pane instead.
-- **B. Ship a default cadence driver.** Make the standard launch path drive `/loop` (the `HARNESS_ORCH_LOOP` knob in `scripts/harness-up.sh` is a start) so the pipeline self-advances out of the box instead of depending on the user wiring `/loop`. Document loudly that a single `/orchestrator` is one tick.
+- **B. Ship a default cadence driver. ✅ DONE (2026-06-11).** `scripts/harness-up.sh` now defaults `HARNESS_ORCH_LOOP=60s` — the standard headed launch runs `/loop 60s /orchestrator`, self-advancing out of the box (override with `HARNESS_ORCH_LOOP=30s`, opt out with `=off` for a single cycle). Runbook `docs/05-runbooks/running-the-harness.md` documents that a single `/orchestrator` is one tick.
 - **C. Event-driven kick.** A file-watcher on task files / `qa-report-*.md` status lines fires an orchestrator cycle on change, so completion → reap/QA happens promptly without fixed-interval polling.
 - **D. Liveness signal.** Have the orchestrator (or a wrapper) detect "agents present but no driver advancing them" and surface it (warn / auto-tick) rather than failing silently.
 
-Likely the real fix is **A + B together**: finished agents free their own pane/slot, *and* the default launch self-drives cadence so "looks hung" can't happen from a normal start.
+Real fix was **A + B together**: **B is now shipped** (default self-driving loop → "looks hung" can't happen from a normal start). **A** (finished agents free their own pane/slot) remains as a minor follow-up — without it a done agent wastes a slot for up to one loop interval, but it no longer stalls the pipeline.
 
 ### Notes
 - Related observability tooling added on branch `feature/headed-tmux-orchestrator`: `scripts/harness-up.sh` (headed-in-tmux launch, has `HARNESS_ORCH_LOOP`), `scripts/orch-watch.sh`, `scripts/orch-run.sh`, `scripts/_fmt_stream.py`.

@@ -28,8 +28,11 @@
 # Env:
 #   HARNESS_TMUX_SESSION      session name (default: harness)
 #   HARNESS_CLAUDE_DANGEROUS  default 1 — skip permission prompts (unattended spawns)
-#   HARNESS_ORCH_LOOP         if set (e.g. "30s"), run the orchestrator on a /loop
-#                             at that interval instead of a single cycle
+#   HARNESS_ORCH_LOOP         loop interval for the orchestrator (default: 60s).
+#                             The orchestrator runs on `/loop <interval> /orchestrator`
+#                             so the pipeline self-advances out of the box. Override
+#                             with e.g. HARNESS_ORCH_LOOP=30s; set to "off"/"none"
+#                             for a single cycle that then idles at the TUI.
 set -uo pipefail
 
 if [ ! -d tasks ] || [ ! -f orchestrator-state.yaml ]; then
@@ -56,11 +59,13 @@ fi
 # Build the headed orchestrator command for pane 0.
 ORCH_CMD="claude"
 [ "${HARNESS_CLAUDE_DANGEROUS:-1}" = "1" ] && ORCH_CMD="$ORCH_CMD --dangerously-skip-permissions"
-if [ -n "${HARNESS_ORCH_LOOP:-}" ]; then
-  ORCH_CMD="$ORCH_CMD '/loop ${HARNESS_ORCH_LOOP} /orchestrator'"   # continuous
-else
-  ORCH_CMD="$ORCH_CMD /orchestrator"                                # one cycle, then idle at the TUI
-fi
+# Default to a self-driving loop so the pipeline advances out of the box — a
+# single cycle would look hung once the first worker finishes (see todo.md).
+HARNESS_ORCH_LOOP="${HARNESS_ORCH_LOOP:-60s}"
+case "$HARNESS_ORCH_LOOP" in
+  off|none|"") ORCH_CMD="$ORCH_CMD /orchestrator" ;;                              # one cycle, then idle at the TUI
+  *)           ORCH_CMD="$ORCH_CMD '/loop ${HARNESS_ORCH_LOOP} /orchestrator'" ;; # continuous, every $HARNESS_ORCH_LOOP
+esac
 
 # window 0 "orchestrator", pane 0 = a shell in the project dir (we send-keys the
 # orchestrator into it so the shell survives if claude exits → easy re-run).

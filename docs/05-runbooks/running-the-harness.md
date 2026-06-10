@@ -120,9 +120,12 @@ external driver. Pick the launch path that fits what you're doing.
 ### 4a. Headed in tmux — the normal way (recommended)
 
 ```bash
-# continuous: re-fire a cycle every 30s until you stop it
-HARNESS_ORCH_LOOP=30s bash ~/agent-harness/scripts/harness-up.sh
+# self-driving by default: re-fires a cycle every 60s until you stop it
+bash ~/agent-harness/scripts/harness-up.sh
 tmux attach -t harness          # detach: Ctrl-b then d
+
+# override the interval:           HARNESS_ORCH_LOOP=30s bash ~/agent-harness/scripts/harness-up.sh
+# single cycle (then idle at TUI): HARNESS_ORCH_LOOP=off  bash ~/agent-harness/scripts/harness-up.sh
 ```
 
 This creates a tmux session named `harness`, **detached**, and starts everything
@@ -141,9 +144,11 @@ tmux session "harness"
 ```
 
 - **Pane 1 (the right dashboard) opens automatically** — you don't launch it.
-- Without `HARNESS_ORCH_LOOP`, pane 0 runs **one cycle then idles** at the TUI.
-  Because finished agents don't self-exit yet (see Caveats), a single cycle
-  won't carry a feature to completion — set the loop, or use `harness-drive.sh`.
+- By default it loops every **60s** (`HARNESS_ORCH_LOOP`, default `60s`), so the
+  pipeline self-advances. Override the interval (`HARNESS_ORCH_LOOP=30s`) or opt
+  out with `HARNESS_ORCH_LOOP=off` for a single cycle that then idles at the TUI.
+  Don't run a single cycle for a real feature — finished agents don't self-exit
+  yet (see Caveats), so one cycle would look hung after the first worker finishes.
 - If a `harness` session already exists, the script refuses to clobber it.
 
 ### 4b. Drive a feature to completion, then stop — `harness-drive.sh`
