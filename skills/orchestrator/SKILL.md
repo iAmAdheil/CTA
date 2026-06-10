@@ -176,6 +176,11 @@ This prints task IDs (newline-delimited) whose `status: backlog` AND every `depe
 > `provision-worker` JSON returns `pane`; you persist that and pass it to `launch-worker` and
 > `kill-pane`. The agents window is created on the first spawn and self-heals away when the last
 > pane is killed.
+>
+> You may **assume you are running inside the `harness` tmux session** (window 0, where the headed
+> launcher `~/agent-harness/scripts/harness-up.sh` starts you). Agents go into the separate `agents`
+> window of that same session — the wrappers handle this; `ensure-session` is a no-op when the
+> session already exists, so spawning is safe whether or not the launcher created it.
 
 For each runnable task ID, in this exact order:
 
