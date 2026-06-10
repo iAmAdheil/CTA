@@ -30,10 +30,12 @@ DLOG="$LOGDIR/drive.log"
 
 say(){ echo "[$(date '+%H:%M:%S')] $*" | tee -a "$DLOG"; }
 
-# active worker count — read straight from the state file (no conda needed)
-active_count(){ grep -cE '^[[:space:]]*-[[:space:]]*task_id:' orchestrator-state.yaml 2>/dev/null || echo 0; }
+# active worker count — read straight from the state file (no conda needed).
+# NB: `grep -c` prints "0" AND exits 1 on no match, so capture stdout and never
+# chain `|| echo 0` (that would emit "0\n0" and break the integer test below).
+active_count(){ local c; c=$(grep -cE '^[[:space:]]*-[[:space:]]*task_id:' orchestrator-state.yaml 2>/dev/null); echo "${c:-0}"; }
 # tasks not yet archived to done/ (i.e. still moving through the pipeline)
-pending_count(){ find tasks -type f \( -path '*/backlog/*.yaml' -o -path '*/in-progress/*.yaml' -o -path '*/review/*.yaml' \) 2>/dev/null | grep -c . ; }
+pending_count(){ find tasks -type f \( -path '*/backlog/*.yaml' -o -path '*/in-progress/*.yaml' -o -path '*/review/*.yaml' \) 2>/dev/null | wc -l | tr -d ' '; }
 # signature of agent OUTPUTS: every task status line + every qa-report status line
 work_sig(){
   { find tasks -type f -name '*.yaml' -exec grep -h '^status:' {} \; 2>/dev/null
