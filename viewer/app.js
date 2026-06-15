@@ -25,6 +25,26 @@ const KIND = {
 };
 const ORDER = ["agent_start", "agent_stop", "tool", "error", "task_move", "qa_verdict", "git", "state", "run_start", "run_end"];
 
+// ---- help dialog content (legend glyphs/colors come from KIND, so they never drift) ----
+const KIND_HELP = [
+  ["run_start",   "the harness launch began — one run = one harness-up → teardown"],
+  ["agent_start", "a harness agent started: orchestrator, worker, QA, or fixer"],
+  ["tool",        "a tool call by an agent — its name + a short summary. Click the row for the transcript ref"],
+  ["error",       "a tool call returned an error — your first stop for “what broke”"],
+  ["task_move",   "a task changed state: backlog → in-progress → review → done"],
+  ["qa_verdict",  "behavioral QA’s call on a task: looks-good / needs-changes / escalate"],
+  ["git",         "a git event: commit, branch, merge, or worktree add/remove"],
+  ["state",       "an orchestrator cycle tick — a snapshot of the last action + active agents"],
+  ["agent_stop",  "an agent finished, or was reaped by the orchestrator at a handoff"],
+  ["run_end",     "the harness was stopped and the run was torn down"],
+];
+const ROLE_HELP = [
+  ["orchestrator", "the control loop — moves tasks, spawns agents, merges PRs"],
+  ["worker",       "implements one task, commits, opens the PR"],
+  ["qa",           "drives the feature behaviorally and renders a verdict"],
+  ["fixer",        "Opus fix pass after a needs-changes verdict"],
+];
+
 // ---- fetch helpers -----------------------------------------------------------
 async function fetchJSON(url) {
   const r = await fetch(url, { cache: "no-store" });
@@ -72,8 +92,77 @@ window.addEventListener("hashchange", route);
 window.addEventListener("DOMContentLoaded", () => {
   $("#brand").onclick = () => (location.hash = "");
   $("#refresh").onclick = () => route(true);
+  $("#help").onclick = openHelp;
   route();
 });
+window.addEventListener("keydown", (e) => { if (e.key === "Escape") closeHelp(); });
+
+// ---- help dialog ----
+function closeHelp() { const m = $("#help-modal"); if (m) m.remove(); }
+function openHelp() {
+  if ($("#help-modal")) return;
+  const back = el("div", "modal-backdrop");
+  back.id = "help-modal";
+  back.onclick = (e) => { if (e.target === back) closeHelp(); };
+  const legend = KIND_HELP.map(([k, d]) => {
+    const m = KIND[k] || { glyph: "•", color: "#8b96a5", label: k };
+    return `<div class="g" style="color:${m.color}">${m.glyph}</div>` +
+           `<div class="d"><b>${m.label || k}</b> — ${d}</div>`;
+  }).join("");
+  const roles = ROLE_HELP.map(([r, d]) =>
+    `<div><span class="role ${r}">${r}</span></div><div class="d">${d}</div>`).join("");
+  back.innerHTML = `
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <h2>How to read these logs</h2>
+        <button class="close" title="Close (Esc)">×</button>
+      </div>
+      <p>Each <b>run</b> is one harness launch (<code>harness-up.sh</code> → teardown). The
+      timeline is every event in that run, in order — recorded mechanically by tailing each
+      harness agent's transcript, diffing the task files, and polling git. No agent writes these
+      logs, so they're a faithful record of what actually happened.</p>
+
+      <h3>Event icons</h3>
+      <div class="legend">${legend}</div>
+
+      <h3>Agent roles (badge colours)</h3>
+      <div class="roles">${roles}</div>
+
+      <h3>Filtering &amp; drill-down</h3>
+      <ul>
+        <li><b>Sidebar → Event types</b>: click to toggle a kind on/off.</li>
+        <li><b>Sidebar → Agents</b>: click an agent to isolate just its events.</li>
+        <li><b>Search</b>: matches tool name, summary, task, or feature.</li>
+        <li><b>errors only</b>: jump straight to failed tool calls.</li>
+        <li><b>Click a tool / error row</b> → reveals the <code>transcript</code> path + message id.
+        Open that <code>.jsonl</code> to read the full tool input/output — the timeline stores
+        summaries, not full IO.</li>
+      </ul>
+
+      <h3>Debugging recipes</h3>
+      <ul>
+        <li><b>“What broke?”</b> → <b>errors only</b>, read the error, then open its <code>ref</code>.</li>
+        <li><b>“What did the orchestrator decide?”</b> → filter to the
+        <span class="role orchestrator">orchestrator</span> — its tool calls <em>are</em> the task
+        moves, spawns, and merges.</li>
+        <li><b>“Why did QA fail a task?”</b> → filter to that task's
+        <span class="role qa">qa</span> agent and read up to its <b>QA verdict</b>.</li>
+        <li><b>“A task got stuck”</b> → follow its <b>task move</b> events; one that entered
+        <code>in-progress</code> but never reached <code>review</code> means the worker stalled or crashed.</li>
+      </ul>
+
+      <h3>Good to know</h3>
+      <ul>
+        <li>Only <b>harness-spawned</b> agents are recorded — an ad-hoc <code>claude</code> you open by hand is ignored.</li>
+        <li>Depth is <b>events + tool calls</b> (plus errors), not full reasoning or tool IO.</li>
+        <li>Data lives at <code>~/.agent-harness-history/&lt;project&gt;/runs/&lt;run-id&gt;/events.ndjson</code> — plain JSON, greppable.</li>
+        <li>A run still marked <code>running</code> after you stopped it just means the teardown
+        marker didn't land (best-effort) — harmless.</li>
+      </ul>
+    </div>`;
+  back.querySelector(".close").onclick = closeHelp;
+  document.body.appendChild(back);
+}
 
 function setCrumbs(parts) {
   const nav = $("#crumbs");
