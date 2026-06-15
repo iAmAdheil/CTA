@@ -16,6 +16,58 @@ this test exposes are tracked in the roadmap and in the memory `harness-worker-r
 
 ---
 
+## Running it the self-driving way — and watching the recording
+
+The **Procedure** further down hand-drives each orchestrator step so you can
+inspect the control flow in isolation. To exercise the *whole* self-driving loop
+**and the history recorder**, run the harness for real and browse the result:
+
+```bash
+PROJ=~/harness-dummy
+cd "$PROJ"
+HARNESS_ORCH_LOOP=30s bash ~/agent-harness/scripts/harness-up.sh   # self-drives; records this run
+tmux attach -t harness          # pane 0 orchestrator · pane 1 dashboard · pane 2 history recorder
+#   detach: Ctrl-b then d       # stop:  tmux kill-session -t harness
+```
+
+### Every run is recorded — mechanically, no agent narrates it
+
+`harness-up.sh` mints a **run id** (one per launch → teardown) and starts a
+**history recorder** pane that records, for the life of the run:
+
+- each harness agent's **tool calls + errors** — the orchestrator plus every
+  worker / QA / fixer, tailed from their Claude transcripts (only UUIDs the
+  harness itself spawned; an ad-hoc `claude` you open by hand is ignored),
+- **task moves** (backlog→in-progress→review→done) and **QA verdicts**,
+- **git** commits / branches / merges / worktrees.
+
+It lands **outside** the project at `~/.agent-harness-history/<project>/runs/<run-id>/`
+(so it survives `git clean` / worktree teardown). Depth = *events + tool calls*
+(each call's name + a short summary + a `ref` back to the transcript line), not
+full tool IO or agent reasoning. Needs `python3`+`pyyaml` or the `harness` conda
+env; if neither is present `harness-up.sh` prints a warning and runs without
+recording (the harness itself is unaffected).
+
+### Browse a run
+
+```bash
+bash ~/agent-harness/scripts/harness-history.sh   # serves the store locally + opens your browser; Ctrl-C to stop
+```
+
+Landing → projects → runs (each card shows event / agent / **error** counts and
+the features touched). Open a run → the filterable timeline. For this test,
+confirm you can see: the **breakdown** agent, each **worker**'s tool-by-tool arc,
+the `task_move`s as tasks advance, the **`qa_verdict`**, and the **merge** — then
+flip **errors only** to jump to anything that broke, and click a tool row to
+reveal its transcript `ref` for manual drill-down. Sidebar filters by event type
+and by agent. Full reference: `docs/05-runbooks/debugging-with-history.md`.
+
+> The manual Procedure below does NOT start the recorder (it hand-drives the
+> wrappers instead of launching `harness-up.sh`). Use it to study a single step;
+> use the self-driving path above to test the loop end to end **with** history.
+
+---
+
 ## Prerequisites
 
 - `tmux`, `git`, and the `claude` CLI on PATH.
