@@ -130,8 +130,11 @@ def append_event(rd: Path, event: dict[str, Any], *, seq: int | None = None) -> 
         seq = event.get("seq")
     if seq is None:
         seq = _next_seq(rd)
-    event = {"seq": seq, "ts": event.get("ts") or now_iso(), **event}
-    event["seq"] = seq  # ensure it wins even if caller passed one in the dict
+    # Compute ts/seq, then let them win over whatever the caller passed (callers
+    # may pass `ts: None` to mean "stamp observation time" — that must not survive
+    # the spread).
+    ts = event.get("ts") or now_iso()
+    event = {**event, "seq": seq, "ts": ts}
     line = json.dumps(event, ensure_ascii=False, default=str)
     with _events_path(rd).open("a", encoding="utf-8") as f:
         f.write(line + "\n")
@@ -224,17 +227,26 @@ def end_run(*, slug: str, run_id: str, reason: str = "teardown") -> None:
 # Index (roll-up the viewer's landing page reads)
 # ---------------------------------------------------------------------------
 
-# kinds we surface as headline counts on each run card
-_HEADLINE_KINDS = ("tool", "error", "task_move", "qa_verdict", "git", "agent_start")
+# kinds we still surface as raw counts (secondary; the headline is outcome-based)
+_HEADLINE_KINDS = ("tool", "task_move", "qa_verdict", "git", "agent_start", "problem")
 
 
-def _summarize_run(rd: Path, run: dict[str, Any]) -> dict[str, Any]:
-    counts: dict[str, int] = {}
-    sessions: set[str] = set()
-    features: set[str] = set()
-    last_ts = run.get("started")
-    total = 0
+def _dur_s(a: str | None, b: str | None) -> int | None:
+    """Whole seconds between two ISO-8601-Z timestamps (b - a), or None."""
+    if not a or not b:
+        return None
+    try:
+        from datetime import datetime
+        d = (datetime.fromisoformat(b.replace("Z", "+00:00"))
+             - datetime.fromisoformat(a.replace("Z", "+00:00"))).total_seconds()
+        return int(d) if d >= 0 else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _read_events(rd: Path) -> list[dict[str, Any]]:
     ep = _events_path(rd)
+    out: list[dict[str, Any]] = []
     if ep.exists():
         with ep.open("r", encoding="utf-8") as f:
             for line in f:
@@ -242,30 +254,227 @@ def _summarize_run(rd: Path, run: dict[str, Any]) -> dict[str, Any]:
                 if not line:
                     continue
                 try:
-                    ev = json.loads(line)
+                    out.append(json.loads(line))
                 except json.JSONDecodeError:
                     continue
-                total += 1
-                k = ev.get("kind", "?")
-                counts[k] = counts.get(k, 0) + 1
-                if ev.get("session"):
-                    sessions.add(ev["session"])
+    return out
+
+
+def summarize_run(rd: Path, run: dict[str, Any]) -> dict[str, Any]:
+    """Build the full per-run rollup from events.ndjson and write it to summary.json.
+
+    Pure function of the event stream (no LLM). Answers the engineer's questions:
+    did it ship, what did it cost, where did time go, what went wrong, and the
+    per-task story. The viewer's Overview/Tasks tabs read this file directly.
+    """
+    events = _read_events(rd)
+    started = run.get("started")
+    ended = run.get("ended")
+    last_ts = started
+    counts: dict[str, int] = {}
+    features: set[str] = set()
+
+    agents: dict[str, dict[str, Any]] = {}           # session -> agent record
+    task_moves: dict[str, list[dict[str, Any]]] = {} # task -> ordered moves
+    task_feature: dict[str, str] = {}
+    verdicts: dict[str, list[str]] = {}              # task -> verdicts in order
+    fixer_tasks: dict[str, int] = {}                 # task -> #fixer agents
+    problems: list[dict[str, Any]] = []
+    tool_total = tool_fail = 0
+
+    for ev in events:
+        k = ev.get("kind", "?")
+        counts[k] = counts.get(k, 0) + 1
+        if ev.get("ts"):
+            last_ts = ev["ts"]
+        if ev.get("feature"):
+            features.add(ev["feature"])
+
+        if k == "agent_start":
+            sid = ev.get("session")
+            if sid:
+                agents[sid] = {
+                    "session": sid, "role": ev.get("role"), "task": ev.get("task"),
+                    "feature": ev.get("feature"), "model": ev.get("model"),
+                    "start": ev.get("ts"), "stop": None,
+                    "tokens": {}, "cost_usd": None, "turns": 0, "tool_calls": 0,
+                    "errors": 0, "files_written": 0, "active_dur_s": None,
+                    "final_note": None,
+                }
+                if ev.get("role") == "fixer" and ev.get("task"):
+                    fixer_tasks[ev["task"]] = fixer_tasks.get(ev["task"], 0) + 1
+        elif k == "agent_stop":
+            sid = ev.get("session")
+            a = agents.get(sid)
+            if a is None:
+                a = agents.setdefault(sid or f"?{len(agents)}", {
+                    "session": sid, "role": ev.get("role"), "task": ev.get("task"),
+                    "feature": ev.get("feature"), "start": None})
+            a["stop"] = ev.get("ts")
+            for f in ("model", "tokens", "cost_usd", "turns", "tool_calls",
+                      "errors", "files_written", "active_dur_s", "final_note"):
+                if ev.get(f) is not None:
+                    a[f] = ev[f]
+        elif k == "tool":
+            tool_total += 1
+            if ev.get("ok") is False:
+                tool_fail += 1
+        elif k == "task_move":
+            tid = ev.get("task")
+            if tid:
+                task_moves.setdefault(tid, []).append(
+                    {"ts": ev.get("ts"), "from": ev.get("from"),
+                     "to": ev.get("to"), "status": ev.get("status")})
                 if ev.get("feature"):
-                    features.add(ev["feature"])
-                if ev.get("ts"):
-                    last_ts = ev["ts"]
-    return {
+                    task_feature[tid] = ev["feature"]
+        elif k == "qa_verdict":
+            tid = ev.get("task")
+            if tid and ev.get("verdict"):
+                verdicts.setdefault(tid, []).append(ev["verdict"])
+                if ev.get("feature"):
+                    task_feature.setdefault(tid, ev["feature"])
+        elif k == "problem":
+            problems.append({"code": ev.get("code"), "severity": ev.get("severity"),
+                             "task": ev.get("task"), "feature": ev.get("feature"),
+                             "reason": ev.get("reason"), "ts": ev.get("ts")})
+
+    # ---- cost / tokens rollups -------------------------------------------
+    def _tok_total(t: dict[str, Any]) -> int:
+        return sum(v for v in (t or {}).values() if isinstance(v, int))
+
+    cost_total = 0.0
+    cost_known = False
+    tokens_total = 0
+    by_role: dict[str, float] = {}
+    by_task: dict[str, float] = {}
+    by_model: dict[str, float] = {}
+    for a in agents.values():
+        tokens_total += _tok_total(a.get("tokens"))
+        c = a.get("cost_usd")
+        if c is not None:
+            cost_known = True
+            cost_total += c
+            by_role[a.get("role") or "?"] = round(by_role.get(a.get("role") or "?", 0) + c, 6)
+            if a.get("task"):
+                by_task[a["task"]] = round(by_task.get(a["task"], 0) + c, 6)
+            m = a.get("model") or "?"
+            by_model[m] = round(by_model.get(m, 0) + c, 6)
+
+    # ---- per-task stories -------------------------------------------------
+    def _lifecycle(moves: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        stages = []
+        for i, m in enumerate(moves):
+            nxt = moves[i + 1]["ts"] if i + 1 < len(moves) else ended
+            stages.append({"state": m.get("to"), "enter": m.get("ts"),
+                           "dur_s": _dur_s(m.get("ts"), nxt)})
+        return stages
+
+    tasks = []
+    all_task_ids = set(task_moves) | {a["task"] for a in agents.values() if a.get("task")}
+    for tid in sorted(all_task_ids):
+        moves = task_moves.get(tid, [])
+        final_state = moves[-1]["to"] if moves else None
+        vs = verdicts.get(tid, [])
+        t_agents = [
+            {"role": a.get("role"), "model": a.get("model"),
+             "cost_usd": a.get("cost_usd"), "tokens": _tok_total(a.get("tokens")),
+             "turns": a.get("turns"), "tool_calls": a.get("tool_calls"),
+             "errors": a.get("errors"), "active_dur_s": a.get("active_dur_s"),
+             "final_note": a.get("final_note")}
+            for a in agents.values() if a.get("task") == tid
+        ]
+        tasks.append({
+            "id": tid,
+            "feature": task_feature.get(tid),
+            "lifecycle": _lifecycle(moves),
+            "final_state": final_state,
+            "verdicts": vs,
+            "qa_round_trips": vs.count("needs-changes"),
+            "fixer_cycles": fixer_tasks.get(tid, 0),
+            "cost_usd": by_task.get(tid),
+            "agents": t_agents,
+            "final_note": next((a["final_note"] for a in reversed(t_agents)
+                                if a.get("final_note")), None),
+            "outcome": final_state,
+        })
+
+    tasks_total = len(all_task_ids)
+    tasks_done = sum(1 for t in tasks if t["final_state"] == "done")
+
+    # ---- features ---------------------------------------------------------
+    feat_rows = []
+    for fname in sorted(features):
+        ftasks = [t for t in tasks if t["feature"] == fname]
+        feat_rows.append({
+            "name": fname,
+            "tasks_total": len(ftasks),
+            "tasks_done": sum(1 for t in ftasks if t["final_state"] == "done"),
+        })
+
+    # ---- quality / problems ----------------------------------------------
+    all_v = [v for vs in verdicts.values() for v in vs]
+    qa = {"looks_good": all_v.count("looks-good"),
+          "needs_changes": all_v.count("needs-changes"),
+          "escalate": all_v.count("escalate")}
+    prob_counts: dict[str, int] = {}
+    for p in problems:
+        prob_counts[p["code"] or "?"] = prob_counts.get(p["code"] or "?", 0) + 1
+
+    wall_s = _dur_s(started, ended) or _dur_s(started, last_ts)
+    active_s = sum(a["active_dur_s"] for a in agents.values()
+                   if isinstance(a.get("active_dur_s"), int)) or 0
+
+    summary = {
         "run": run.get("run"),
-        "started": run.get("started"),
-        "ended": run.get("ended"),
-        "status": run.get("status"),
-        "interval": run.get("interval"),
-        "last_ts": last_ts,
-        "events": total,
-        "agents": len(sessions),
-        "errors": counts.get("error", 0),
-        "features": sorted(features),
+        "started": started, "ended": ended, "status": run.get("status"),
+        "interval": run.get("interval"), "last_ts": last_ts,
+        "events": len(events),
+        "outcome": {
+            "shipped": tasks_total > 0 and tasks_done == tasks_total,
+            "tasks_total": tasks_total, "tasks_done": tasks_done,
+            "features": feat_rows,
+        },
+        "cost": {
+            "usd": round(cost_total, 4) if cost_known else None,
+            "tokens": tokens_total,
+            "by_role": by_role, "by_task": by_task, "by_model": by_model,
+        },
+        "time": {"wall_s": wall_s, "active_s": active_s,
+                 "idle_s": max(0, (wall_s or 0) - active_s)},
+        "quality": {"qa": qa, "qa_round_trips": qa["needs_changes"],
+                    "fixer_cycles": sum(fixer_tasks.values()),
+                    "tool_calls": tool_total, "tool_failures": tool_fail},
+        "problems": problems,
+        "problem_counts": prob_counts,
+        "agents": sorted(agents.values(), key=lambda a: a.get("start") or ""),
+        "tasks": tasks,
         "counts": {k: counts.get(k, 0) for k in _HEADLINE_KINDS if counts.get(k)},
+    }
+    try:
+        (rd / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+    return summary
+
+
+def _summarize_run(rd: Path, run: dict[str, Any]) -> dict[str, Any]:
+    """Compact, outcome-oriented headline for the index landing cards (also
+    (re)writes the full summary.json via summarize_run)."""
+    s = summarize_run(rd, run)
+    return {
+        "run": s["run"], "started": s["started"], "ended": s["ended"],
+        "status": s["status"], "interval": s["interval"], "last_ts": s["last_ts"],
+        "events": s["events"],
+        "agents": len(s["agents"]),
+        "outcome": s["outcome"],
+        "cost_usd": s["cost"]["usd"], "tokens": s["cost"]["tokens"],
+        "wall_s": s["time"]["wall_s"], "active_s": s["time"]["active_s"],
+        "qa": s["quality"]["qa"],
+        "tool_calls": s["quality"]["tool_calls"],
+        "tool_failures": s["quality"]["tool_failures"],
+        "problems": len(s["problems"]),
+        "features": [f["name"] for f in s["outcome"]["features"]],
+        "counts": s["counts"],
     }
 
 

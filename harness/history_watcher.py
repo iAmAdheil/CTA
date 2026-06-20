@@ -40,7 +40,7 @@ from typing import Any
 
 import yaml
 
-from . import history
+from . import history, pricing
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +125,42 @@ def read_new_lines(path: Path, offset: int) -> tuple[list[str], int]:
 
 QA_VERDICTS = ("looks-good", "needs-changes", "escalate", "WIP")
 
+# An agent with an in-progress task but no new tool activity for this long (wall
+# clock) is flagged as a stall. Generous so a long Bash/test run isn't a false
+# positive.
+STALL_SECONDS = 300
+
+# Tool result tail length kept on a `tool` event (Bash stdout/stderr etc.).
+RESULT_TAIL = 200
+
+
+def _iso_ms(ts: str | None) -> float | None:
+    """ISO-8601-Z timestamp → epoch milliseconds, or None."""
+    if not ts:
+        return None
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp() * 1000.0
+    except (ValueError, TypeError):
+        return None
+
+
+# Classify a tool result into a `problem` code. Matches *actual* git failure
+# output, not JSON that merely mentions "conflict"/"rejected" as a false value —
+# e.g. the merge helper prints {"merged": true, "conflict": false} on success.
+def _problem_code(tool: str, ok: bool, body: str) -> str | None:
+    low = body.lower()
+    if ("[rejected]" in low or "[remote rejected]" in low or "non-fast-forward" in low
+            or "updates were rejected" in low or "failed to push some refs" in low):
+        return "push_rejected"
+    if ("automatic merge failed" in low or "conflict (content" in low
+            or "merge conflict in" in low or "fix conflicts and then commit" in low):
+        return "merge_conflict"
+    if not ok and ("permission denied" in low or "haven't granted" in low
+                   or "requested permissions" in low or "not allowed to" in low):
+        return "permission_denied"
+    return None
+
 
 class Watcher:
     def __init__(self, *, project: Path, run_id: str, slug: str,
@@ -151,6 +187,12 @@ class Watcher:
         self.emitted_verdicts: set[tuple[str, str]] = set()  # (task_id, verdict) — dedup
         self._git_primed = False
 
+        # Rebuild mode: collect events into a list (no file append) and stamp them
+        # with transcript time so they merge coherently with preserved control-
+        # plane events. Live recording leaves both unset.
+        self._sink: list[dict[str, Any]] | None = None
+        self.rebuild = False
+
         # The pinned orchestrator is a first-class agent from t=0.
         if orch_sid:
             self.agents[orch_sid] = self._new_agent("orchestrator", None, None, "opus")
@@ -159,12 +201,27 @@ class Watcher:
 
     def emit(self, ev: dict[str, Any]) -> None:
         ev.setdefault("run", self.run_id)
+        if self._sink is not None:
+            ev = {"ts": ev.get("ts"), **ev}  # keep explicit ts (transcript) if set
+            self._sink.append(ev)
+            return
         self.seq = history.append_event(self.rd, ev, seq=self.seq) + 1
 
     def _new_agent(self, role, task, feature, model):
         return {"role": role, "task": task, "feature": feature, "model": model,
                 "path": None, "offset": 0, "found": False, "started": False,
-                "stopped": False, "tools": {}}
+                "stopped": False, "tools": {},
+                # --- accounting (Tier 2) -----------------------------------
+                "pending": {},          # tool_use_id -> {name, summary, src_ts, uuid, file}
+                "real_model": None,     # full model id seen in transcript (for cost)
+                "tok": {"input_tokens": 0, "output_tokens": 0,
+                        "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                "turns": 0, "tool_calls": 0, "fails": 0,
+                "files": set(),         # distinct file paths written
+                "first_ts": None, "last_ts": None,   # transcript clock (activity span)
+                "last_text": None,      # final assistant message → final_note
+                "last_activity": None,  # wall clock of last new transcript line (stall)
+                "stalled": False}
 
     # -- agents / transcripts -------------------------------------------------
 
@@ -206,6 +263,8 @@ class Watcher:
                 self.emit({"kind": "agent_start", "session": sid, "role": a["role"],
                            "task": a["task"], "feature": a["feature"], "model": a["model"]})
             lines, a["offset"] = read_new_lines(a["path"], a["offset"])
+            if lines:
+                a["last_activity"] = time.time()
             for i, raw in enumerate(lines):
                 try:
                     line = json.loads(raw)
@@ -214,33 +273,135 @@ class Watcher:
                 self._parse_transcript_line(sid, a, line)
 
     def _parse_transcript_line(self, sid: str, a: dict[str, Any], ev: dict[str, Any]) -> None:
+        """Per transcript line: buffer tool_use, accumulate usage/turns/text, and
+        emit a complete `tool` event (with ok + result tail) when its result lands.
+
+        Depth stays "events + tool calls": we keep each call's input summary, a
+        short result tail, success flag, and the agent's *final* message — not
+        full IO or reasoning.
+        """
         t = ev.get("type")
         ts = ev.get("timestamp")
         base = {"session": sid, "role": a["role"], "task": a["task"],
                 "feature": a["feature"]}
+        # track the agent's activity span on the transcript clock
+        if ts:
+            if a["first_ts"] is None:
+                a["first_ts"] = ts
+            a["last_ts"] = ts
+
         if t == "assistant":
-            content = (ev.get("message") or {}).get("content") or []
+            msg = ev.get("message") or {}
+            if msg.get("model"):
+                a["real_model"] = msg["model"]
+            self._accumulate_usage(a, msg.get("usage") or {})
+            content = msg.get("content") or []
+            saw_block = False
             for c in content:
-                if not isinstance(c, dict) or c.get("type") != "tool_use":
+                if not isinstance(c, dict):
                     continue
-                name = c.get("name", "?")
-                a["tools"][c.get("id")] = name
-                self.emit({**base, "kind": "tool", "ts": ts, "tool": name,
-                           "summary": _tool_summary(name, c.get("input")),
-                           "ref": {"transcript": str(a["path"]), "uuid": ev.get("uuid")}})
+                if c.get("type") == "text" and c.get("text", "").strip():
+                    a["last_text"] = c["text"].strip()
+                    saw_block = True
+                elif c.get("type") == "tool_use":
+                    saw_block = True
+                    name = c.get("name", "?")
+                    a["tools"][c.get("id")] = name
+                    a["tool_calls"] += 1
+                    inp = c.get("input") if isinstance(c.get("input"), dict) else {}
+                    fp = inp.get("file_path") or inp.get("path")
+                    if name in ("Write", "Edit", "NotebookEdit") and fp:
+                        a["files"].add(fp)
+                    a["pending"][c.get("id")] = {
+                        "name": name, "summary": _tool_summary(name, c.get("input")),
+                        "src_ts": ts, "uuid": ev.get("uuid"),
+                    }
+            if saw_block:
+                a["turns"] += 1
+
         elif t == "user":
             content = (ev.get("message") or {}).get("content") or []
             for c in content:
                 if not isinstance(c, dict) or c.get("type") != "tool_result":
                     continue
-                if not c.get("is_error"):
-                    continue
-                body = c.get("content", "")
-                if isinstance(body, list):
-                    body = " ".join(b.get("text", "") for b in body if isinstance(b, dict))
-                tool = a["tools"].get(c.get("tool_use_id"), "")
-                self.emit({**base, "kind": "error", "ts": ts, "tool": tool,
-                           "summary": _short(body, 200)})
+                self._emit_tool_result(a, base, c, ts)
+
+    def _accumulate_usage(self, a: dict[str, Any], usage: dict[str, Any]) -> None:
+        for k in a["tok"]:
+            v = usage.get(k)
+            if isinstance(v, int):
+                a["tok"][k] += v
+
+    def _emit_tool_result(self, a, base, c, ts) -> None:
+        """Emit the buffered `tool` event for this result, plus a `problem` if the
+        result text matches a known failure (push rejected, conflict, permission)."""
+        ok = not c.get("is_error")
+        body = c.get("content", "")
+        if isinstance(body, list):
+            body = " ".join(b.get("text", "") for b in body if isinstance(b, dict))
+        body = str(body)
+        p = a["pending"].pop(c.get("tool_use_id"), None)
+        name = (p or {}).get("name") or a["tools"].get(c.get("tool_use_id"), "?")
+        if not ok:
+            a["fails"] += 1
+        src_ts = (p or {}).get("src_ts")
+        dur = None
+        a_ms, b_ms = _iso_ms(src_ts), _iso_ms(ts)
+        if a_ms is not None and b_ms is not None and b_ms >= a_ms:
+            dur = int(b_ms - a_ms)
+        rts = ts if self.rebuild else None
+        self.emit({**base, "kind": "tool", "tool": name, "ok": ok, "ts": rts,
+                   "summary": (p or {}).get("summary", ""),
+                   "result": _short(body, RESULT_TAIL) if body.strip() else "",
+                   "dur_ms": dur, "src_ts": src_ts,
+                   "ref": {"transcript": str(a["path"]), "uuid": (p or {}).get("uuid")}})
+        code = _problem_code(name, ok, body)
+        if code:
+            self.emit({**base, "kind": "problem", "severity": "error" if not ok else "warn",
+                       "code": code, "tool": name, "reason": _short(body, 200), "ts": rts})
+
+    def _flush_pending(self, a, sid) -> None:
+        """Emit any tool_use whose result never arrived (agent ended mid-call)."""
+        base = {"session": sid, "role": a["role"], "task": a["task"], "feature": a["feature"]}
+        for tu_id, p in list(a["pending"].items()):
+            self.emit({**base, "kind": "tool", "tool": p["name"], "ok": None,
+                       "summary": p["summary"], "result": "", "dur_ms": None,
+                       "src_ts": p["src_ts"], "ts": p["src_ts"] if self.rebuild else None,
+                       "ref": {"transcript": str(a["path"]), "uuid": p["uuid"]}})
+        a["pending"].clear()
+
+    def _agent_summary(self, a: dict[str, Any]) -> dict[str, Any]:
+        """The Tier-2 accounting block carried on agent_stop."""
+        model = a["real_model"] or a["model"]
+        cost = pricing.cost_usd(a["tok"], model)
+        active = None
+        f, l = _iso_ms(a["first_ts"]), _iso_ms(a["last_ts"])
+        if f is not None and l is not None and l >= f:
+            active = int((l - f) / 1000)
+        return {
+            "model": model,
+            "tokens": dict(a["tok"]),
+            "cost_usd": cost,
+            "turns": a["turns"], "tool_calls": a["tool_calls"], "errors": a["fails"],
+            "files_written": len(a["files"]),
+            "active_dur_s": active,
+            "final_note": _short(a["last_text"], 280) if a["last_text"] else None,
+        }
+
+    def _emit_agent_stop(self, sid: str, a: dict[str, Any]) -> None:
+        """Flush pending tools, emit agent_stop with the accounting summary, and
+        flag a worker that ended without writing any files."""
+        self._flush_pending(a, sid)
+        a["stopped"] = True
+        rts = a["last_ts"] if self.rebuild else None
+        self.emit({"kind": "agent_stop", "session": sid, "role": a["role"],
+                   "task": a["task"], "feature": a["feature"], "ts": rts,
+                   **self._agent_summary(a)})
+        if a["role"] == "worker" and not a["files"]:
+            self.emit({"kind": "problem", "severity": "warn", "code": "zero_write_worker",
+                       "session": sid, "role": a["role"], "task": a["task"],
+                       "feature": a["feature"], "ts": rts,
+                       "reason": "worker ended without writing any files"})
 
     def _stop_finished_agents(self) -> None:
         """Emit agent_stop when a task's agent is gone from active_workers and the
@@ -251,9 +412,24 @@ class Watcher:
                 continue
             task = a["task"]
             if task and task not in active_tasks:
-                a["stopped"] = True
-                self.emit({"kind": "agent_stop", "session": sid, "role": a["role"],
-                           "task": task, "feature": a["feature"]})
+                self._emit_agent_stop(sid, a)
+
+    def _detect_stalls(self) -> None:
+        """Flag a started, non-orchestrator agent whose task is still in-progress
+        but which has shown no new transcript activity for STALL_SECONDS."""
+        active_tasks = set(self._active_roles().keys())
+        now = time.time()
+        for sid, a in self.agents.items():
+            if (a["stopped"] or not a["started"] or a["stalled"]
+                    or a["role"] == "orchestrator" or not a["last_activity"]):
+                continue
+            if a["task"] in active_tasks and now - a["last_activity"] > STALL_SECONDS:
+                a["stalled"] = True
+                mins = int((now - a["last_activity"]) / 60)
+                self.emit({"kind": "problem", "severity": "warn", "code": "agent_stall",
+                           "session": sid, "role": a["role"], "task": a["task"],
+                           "feature": a["feature"],
+                           "reason": f"no tool activity for ~{mins}m while in-progress"})
 
     # -- control plane --------------------------------------------------------
 
@@ -321,6 +497,11 @@ class Watcher:
             self.emitted_verdicts.add(key)
             self.emit({"kind": "qa_verdict", "task": t["id"], "feature": t["feature"],
                        "verdict": verdict, "report": str(p)})
+            if verdict in ("needs-changes", "escalate"):
+                self.emit({"kind": "problem", "severity": "warn",
+                           "code": f"qa_{verdict.replace('-', '_')}",
+                           "task": t["id"], "feature": t["feature"],
+                           "reason": f"QA verdict: {verdict}"})
 
     def _snapshot_state(self) -> None:
         sf = self.project / "orchestrator-state.yaml"
@@ -412,16 +593,130 @@ class Watcher:
         self._snapshot_boards()
         self._tail_agents()
         self._stop_finished_agents()
+        self._detect_stalls()
         if self.tick_n == 1 or self.tick_n % self.git_every == 0:
             self._poll_git()
 
     def finalize(self, reason: str = "teardown") -> None:
+        # one last read so the orchestrator's final cycle + any trailing tool
+        # results are captured, then stop every still-running agent (the pinned
+        # orchestrator included — we want its tokens/cost in the rollup).
+        self._tail_agents()
         for sid, a in self.agents.items():
-            if a["started"] and not a["stopped"] and a["role"] != "orchestrator":
-                self.emit({"kind": "agent_stop", "session": sid, "role": a["role"],
-                           "task": a["task"], "feature": a["feature"]})
+            if a["started"] and not a["stopped"]:
+                self._emit_agent_stop(sid, a)
         history.end_run(slug=self.slug, run_id=self.run_id, reason=reason)
         history.build_index()
+
+
+# Event kinds the recorder derives from agent transcripts (re-derived on rebuild).
+_TRANSCRIPT_KINDS = {"agent_start", "agent_stop", "tool", "error"}
+# Problem codes that come from a transcript tool result / agent stop (re-derived).
+_TRANSCRIPT_PROBLEMS = {"push_rejected", "merge_conflict", "permission_denied",
+                        "zero_write_worker"}
+
+
+def rebuild_run(project: Path, run_id: str) -> int:
+    """Re-derive a run's transcript-sourced events with the current recorder, and
+    *merge* them with the control-plane / git / QA events preserved from the
+    original stream — so an old run gains tokens, cost, tool results and notes
+    without losing its task moves and verdicts.
+
+    Non-destructive: backs the original up to `events.ndjson.bak` (and re-reads it
+    on subsequent runs) and leaves `run.json` timestamps untouched. Re-derived
+    events are stamped with their transcript time so they interleave coherently
+    with the preserved control-plane events.
+    """
+    slug = history.project_slug(project)
+    rd = history.run_dir(slug, run_id)
+    ep = rd / "events.ndjson"
+    bak = rd / "events.ndjson.bak"
+    src = bak if bak.exists() else ep
+    if not src.exists():
+        sys.stderr.write(f"rebuild: no events at {src}\n")
+        return 2
+
+    orig = [json.loads(l) for l in src.read_text(encoding="utf-8").splitlines() if l.strip()]
+    run_meta = {}
+    try:
+        run_meta = json.loads((rd / "run.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        pass
+    orch_sid = run_meta.get("orch_session")
+    roster: dict[str, tuple] = {}
+    preserved: list[dict[str, Any]] = []
+    for ev in orig:
+        k = ev.get("kind")
+        if k == "run_start" and not orch_sid:
+            orch_sid = ev.get("orch_session")
+        sid = ev.get("session")
+        if sid and sid not in roster and ev.get("role"):
+            roster[sid] = (ev["role"], ev.get("task"), ev.get("feature"), ev.get("model"))
+        # keep everything that isn't transcript-derived (task_move, qa_verdict,
+        # state, git, and QA/stall problems); drop run_start/run_end (regenerated).
+        if k in ("run_start", "run_end") or k in _TRANSCRIPT_KINDS:
+            continue
+        if k == "problem" and ev.get("code") in _TRANSCRIPT_PROBLEMS:
+            continue
+        preserved.append(ev)
+
+    # Re-derive transcript events into a sink (transcript-timestamped).
+    w = Watcher(project=project, run_id=run_id, slug=slug, orch_sid=orch_sid)
+    w.rebuild = True
+    w._sink = []
+    for sid, (role, task, feature, model) in roster.items():
+        if sid not in w.agents:
+            w.agents[sid] = w._new_agent(role, task, feature, model)
+    w._tail_agents()
+    for sid, a in w.agents.items():
+        if a["started"] and not a["stopped"]:
+            w._emit_agent_stop(sid, a)
+    derived = w._sink
+
+    # agent_start was emitted before its first transcript line was read, so stamp
+    # it with the earliest ts seen for that session.
+    earliest: dict[str, str] = {}
+    for ev in derived:
+        s, t = ev.get("session"), ev.get("ts")
+        if s and t and (s not in earliest or t < earliest[s]):
+            earliest[s] = t
+    for ev in derived:
+        if ev.get("kind") == "agent_start" and not ev.get("ts"):
+            ev["ts"] = earliest.get(ev.get("session"))
+
+    # The original stream's bookends are immutable; prefer them for start/end so a
+    # prior rebuild that clobbered run.json can't skew the wall clock.
+    orig_start = next((e.get("ts") for e in orig if e.get("kind") == "run_start"), None)
+    orig_end = next((e.get("ts") for e in reversed(orig) if e.get("kind") == "run_end"), None)
+    started = orig_start or run_meta.get("started")
+    ended = orig_end or run_meta.get("ended")
+    if run_meta and (run_meta.get("started") != started or run_meta.get("ended") != ended):
+        run_meta.update({"started": started, "ended": ended, "status": "ended"})
+        try:
+            (rd / "run.json").write_text(json.dumps(run_meta, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+    merged = preserved + derived
+    # stable sort by ts; events without a ts fall back to start so they lead.
+    merged.sort(key=lambda e: e.get("ts") or started or "")
+    out = [{"kind": "run_start", "run": run_id, "interval": run_meta.get("interval"),
+            "orch_session": orch_sid, "project": str(project), "ts": started}]
+    out += merged
+    out.append({"kind": "run_end", "run": run_id, "reason": "rebuild", "ts": ended})
+
+    if not bak.exists():
+        ep.rename(bak)
+    lines = []
+    for i, ev in enumerate(out):
+        ts = ev.get("ts") or history.now_iso()
+        ev = {**ev, "seq": i, "ts": ts}
+        lines.append(json.dumps(ev, ensure_ascii=False, default=str))
+    ep.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    history.build_index()  # recomputes summary.json from the merged stream
+    sys.stderr.write(
+        f"rebuild: {ep}\n  {len(roster)} transcripts, "
+        f"{len(preserved)} preserved + {len(derived)} re-derived events\n")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -432,6 +727,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--poll", type=float, default=2.0, help="Seconds between ticks")
     ap.add_argument("--index-every", type=int, default=10, help="Rebuild index every N ticks")
     ap.add_argument("--once", action="store_true", help="Run a single tick and exit (testing)")
+    ap.add_argument("--rebuild", action="store_true",
+                    help="Re-derive an existing run's events from its transcripts and exit")
     args = ap.parse_args(argv)
 
     if not args.run_id:
@@ -440,6 +737,10 @@ def main(argv: list[str] | None = None) -> int:
 
     project = Path(os.path.abspath(os.path.expanduser(args.project)))
     slug = history.project_slug(project)
+
+    if args.rebuild:
+        return rebuild_run(project, args.run_id)
+
     w = Watcher(project=project, run_id=args.run_id, slug=slug, orch_sid=args.orch_sid)
 
     if args.once:

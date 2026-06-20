@@ -35,18 +35,22 @@ tmux attach -t harness          # pane 0 orchestrator · pane 1 dashboard · pan
 `harness-up.sh` mints a **run id** (one per launch → teardown) and starts a
 **history recorder** pane that records, for the life of the run:
 
-- each harness agent's **tool calls + errors** — the orchestrator plus every
-  worker / QA / fixer, tailed from their Claude transcripts (only UUIDs the
-  harness itself spawned; an ad-hoc `claude` you open by hand is ignored),
+- each harness agent's **tool calls** (name, summary, success flag, short result
+  tail) — the orchestrator plus every worker / QA / fixer, tailed from their
+  Claude transcripts (only UUIDs the harness itself spawned),
+- per-agent **accounting on stop**: model, token usage, **cost in $**, turns,
+  files written, active duration, and the agent's final note,
 - **task moves** (backlog→in-progress→review→done) and **QA verdicts**,
-- **git** commits / branches / merges / worktrees.
+- **git** commits / branches / merges / worktrees, and
+- **`problem`s** — QA needs-changes, push rejected, merge conflict, stalls, etc.
 
 It lands **outside** the project at `~/.agent-harness-history/<project>/runs/<run-id>/`
-(so it survives `git clean` / worktree teardown). Depth = *events + tool calls*
-(each call's name + a short summary + a `ref` back to the transcript line), not
-full tool IO or agent reasoning. Needs `python3`+`pyyaml` or the `harness` conda
-env; if neither is present `harness-up.sh` prints a warning and runs without
-recording (the harness itself is unaffected).
+(so it survives `git clean` / worktree teardown), as `events.ndjson` (raw) plus a
+derived `summary.json` (cost / time / per-task rollup). Depth = *events + tool
+calls* (summary + short result tail + a `ref` to the transcript line) plus each
+agent's single final note — not full tool IO or reasoning. Needs `python3`+`pyyaml`
+or the `harness` conda env; if neither is present `harness-up.sh` prints a warning
+and runs without recording (the harness itself is unaffected).
 
 ### Browse a run
 
@@ -54,13 +58,14 @@ recording (the harness itself is unaffected).
 bash ~/agent-harness/scripts/harness-history.sh   # serves the store locally + opens your browser; Ctrl-C to stop
 ```
 
-Landing → projects → runs (each card shows event / agent / **error** counts and
-the features touched). Open a run → the filterable timeline. For this test,
-confirm you can see: the **breakdown** agent, each **worker**'s tool-by-tool arc,
-the `task_move`s as tasks advance, the **`qa_verdict`**, and the **merge** — then
-flip **errors only** to jump to anything that broke, and click a tool row to
-reveal its transcript `ref` for manual drill-down. Sidebar filters by event type
-and by agent. Full reference: `docs/05-runbooks/debugging-with-history.md`.
+Landing → projects → runs (each card leads with the **outcome** — ✓ shipped N/M —
+plus **cost**, duration, QA pass-rate and a ⚠ problem count). Open a run → three
+tabs. For this test, confirm: **Overview** shows the cost split by role/task and
+the **agent timeline**; **Tasks** shows each task's **lifecycle ribbon**, QA
+verdict, per-agent cost and final note; **Timeline** shows the breakdown agent,
+each worker's tool arc, the `task_move`s, the `qa_verdict`, and the merge — flip
+**failures only** to jump to anything that broke, and expand a row for its result
+tail + transcript `ref`. Full reference: `docs/05-runbooks/debugging-with-history.md`.
 
 > The manual Procedure below does NOT start the recorder (it hand-drives the
 > wrappers instead of launching `harness-up.sh`). Use it to study a single step;
