@@ -16,6 +16,23 @@ const el = (tag, cls, txt) => {
   return e;
 };
 
+// ---- minimal, safe inline markdown (agent notes) ----------------------------
+// Escapes HTML first, then renders code spans, bold, italic, links, bare URLs,
+// and newlines. Deliberately small — notes are short prose, not documents.
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+function md(text) {
+  let s = escapeHtml(text);
+  s = s.replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`);
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  s = s.replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, "$1<em>$2</em>");
+  s = s.replace(/\n/g, "<br>");
+  return s;
+}
+
 // ---- event-kind presentation (timeline) -------------------------------------
 const KIND = {
   run_start:   { glyph: "●", color: "#4ea1ff", label: "run start", life: true },
@@ -429,21 +446,38 @@ function renderTasks(root, s) {
     if (tk.agents && tk.agents.length) {
       const tbl = el("table", "task-agents");
       tbl.innerHTML = "<thead><tr><th>role</th><th>model</th><th class='num'>turns</th>" +
-        "<th class='num'>tools</th><th class='num'>files</th><th class='num'>active</th><th class='num'>cost</th></tr></thead>";
+        "<th class='num'>tools</th><th class='num'>files</th><th class='num'>errors</th>" +
+        "<th class='num'>active</th><th class='num'>cost</th></tr></thead>";
       const tb = el("tbody");
       for (const a of tk.agents) {
         const tr = el("tr");
         tr.innerHTML = `<td><span class="role ${a.role || ''}">${a.role || '?'}</span></td>` +
           `<td class="mono muted">${(a.model || '').replace('claude-', '')}</td>` +
           `<td class="num">${a.turns ?? '–'}</td><td class="num">${a.tool_calls ?? '–'}</td>` +
-          `<td class="num">${a.files_written ?? '–'}</td><td class="num">${durS(a.active_dur_s)}</td>` +
+          `<td class="num">${a.files_written ?? '–'}</td>` +
+          `<td class="num${a.errors ? ' err-num' : ''}">${a.errors ?? '–'}</td>` +
+          `<td class="num">${durS(a.active_dur_s)}</td>` +
           `<td class="num">${moneyExact(a.cost_usd)}</td>`;
         tb.appendChild(tr);
       }
       tbl.appendChild(tb); card.appendChild(tbl);
     }
 
-    if (tk.final_note) card.appendChild(el("div", "note", tk.final_note));
+    // per-agent final verdict — what each agent that worked the task concluded
+    const noted = (tk.agents || []).filter(a => a.final_note);
+    if (noted.length) {
+      const notes = el("div", "notes");
+      for (const a of noted) {
+        const n = el("div", "note");
+        n.appendChild(el("span", "role " + (a.role || ""), a.role || "agent"));
+        const span = el("span", "note-body"); span.innerHTML = md(a.final_note);
+        n.appendChild(span);
+        notes.appendChild(n);
+      }
+      card.appendChild(notes);
+    } else if (tk.final_note) {
+      const n = el("div", "note"); n.innerHTML = md(tk.final_note); card.appendChild(n);
+    }
     root.appendChild(card);
   }
 }

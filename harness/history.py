@@ -379,7 +379,8 @@ def summarize_run(rd: Path, run: dict[str, Any]) -> dict[str, Any]:
             {"role": a.get("role"), "model": a.get("model"),
              "cost_usd": a.get("cost_usd"), "tokens": _tok_total(a.get("tokens")),
              "turns": a.get("turns"), "tool_calls": a.get("tool_calls"),
-             "errors": a.get("errors"), "active_dur_s": a.get("active_dur_s"),
+             "errors": a.get("errors"), "files_written": a.get("files_written"),
+             "active_dur_s": a.get("active_dur_s"), "start": a.get("start"),
              "final_note": a.get("final_note")}
             for a in agents.values() if a.get("task") == tid
         ]

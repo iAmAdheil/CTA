@@ -133,6 +133,11 @@ STALL_SECONDS = 300
 # Tool result tail length kept on a `tool` event (Bash stdout/stderr etc.).
 RESULT_TAIL = 200
 
+# Agent final-message length kept as `final_note` — the agent's own verdict on
+# what it did. Generous: this is the per-task "what happened" summary the Tasks
+# view shows in full (the timeline truncates it with an ellipsis on its own).
+FINAL_NOTE = 1000
+
 
 def _iso_ms(ts: str | None) -> float | None:
     """ISO-8601-Z timestamp → epoch milliseconds, or None."""
@@ -385,7 +390,7 @@ class Watcher:
             "turns": a["turns"], "tool_calls": a["tool_calls"], "errors": a["fails"],
             "files_written": len(a["files"]),
             "active_dur_s": active,
-            "final_note": _short(a["last_text"], 280) if a["last_text"] else None,
+            "final_note": _short(a["last_text"], FINAL_NOTE) if a["last_text"] else None,
         }
 
     def _emit_agent_stop(self, sid: str, a: dict[str, Any]) -> None:
